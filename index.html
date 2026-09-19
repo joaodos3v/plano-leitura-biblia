@@ -54,11 +54,41 @@
   .modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
   .modal-actions button { padding: 8px 16px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); font-family: inherit; font-size: 0.85rem; cursor: pointer; }
   .modal-actions .confirm { background: var(--danger); color: #fff; border-color: var(--danger); }
+
+  .login-card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 28px 24px; width: 100%; max-width: 340px; display: flex; flex-direction: column; gap: 12px; }
+  .login-card h2 { margin: 0; font-size: 1.15rem; color: var(--accent); }
+  .login-card p { margin: 0 0 4px; font-size: 0.85rem; color: var(--muted); }
+  .login-card input { padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); font-family: inherit; font-size: 0.95rem; color: var(--ink); }
+  .login-card input:focus { outline: 2px solid var(--accent-light); border-color: var(--accent); }
+  .login-card button { padding: 11px 16px; border-radius: 8px; border: none; background: var(--accent); color: #fff; font-family: inherit; font-size: 0.9rem; cursor: pointer; }
+  .login-card button:disabled { opacity: 0.6; cursor: default; }
+  .login-err { font-size: 0.82rem; color: var(--danger); line-height: 1.4; }
+
+  .userbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 0.78rem; color: var(--muted); margin-bottom: 14px; }
+  .userbar button { background: none; border: none; color: var(--accent); font-family: inherit; font-size: 0.78rem; cursor: pointer; text-decoration: underline; padding: 0; }
+  .sync { padding: 2px 8px; border-radius: 99px; background: var(--accent-light); color: var(--accent); }
+  .sync.err { background: #f6e3e3; color: var(--danger); }
 </style>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
+<div class="modal-overlay hidden" id="loginOverlay">
+  <form class="login-card" id="loginForm">
+    <h2>Plano de Leitura da Biblia</h2>
+    <p>Entre para sincronizar seu progresso entre os aparelhos.</p>
+    <input type="email" id="loginEmail" placeholder="seu email" autocomplete="username" required>
+    <input type="password" id="loginPass" placeholder="sua senha" autocomplete="current-password" required>
+    <button type="submit" id="loginBtn">Entrar</button>
+    <div class="login-err hidden" id="loginErr"></div>
+  </form>
+</div>
 <div class="wrap">
   <h1>Plano de Leitura da Biblia</h1>
+  <div class="userbar hidden" id="userbar">
+    <span id="userEmail"></span>
+    <span class="sync" id="syncState">sincronizado</span>
+    <button type="button" id="logoutBtn">sair</button>
+  </div>
   <div class="subtitle">09/09/2026 a 31/12/2026 &middot; devocional + plano</div>
   <div class="note">Marcar o checkbox so atualiza o seu progresso. Se algum dia voce nao conseguir ler nada do plano, use "Excluir" naquele dia para mover os capitulos para os proximos dias.</div>
 
@@ -114,6 +144,16 @@ function fmtDate(iso) {
 }
 function key(book,ch){ return book+'|'+ch; }
 
+// Preencher com os valores do projeto Supabase (ver SETUP_SUPABASE.md).
+// Enquanto estiverem com os placeholders, o app roda so com localStorage,
+// sem tela de login.
+const SUPABASE_URL = '__SUPABASE_URL__';
+const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__';
+const CLOUD_ENABLED = !SUPABASE_URL.startsWith('__');
+
+let sb = null;
+let userId = null;
+
 let planAssignment = {};  // date -> [[book,ch],...] mutable ONLY via exclude
 let planChecked = new Set();
 let devoChecked = new Set();
@@ -123,7 +163,16 @@ D.devo_schedule.forEach(dd => devoByDate[dd.date] = dd);
 function storageGet(k) { try { return localStorage.getItem(k); } catch(e) { return null; } }
 function storageSet(k, v) { try { localStorage.setItem(k, v); } catch(e) {} }
 
-async function loadState() {
+function setSync(text, isErr) {
+  const el = document.getElementById('syncState');
+  if (!el) return;
+  el.textContent = text;
+  el.classList.toggle('err', !!isErr);
+}
+
+// Le o cache local. Sempre roda primeiro, para a tela aparecer preenchida
+// antes da ida ate o Supabase (e para o app seguir util offline).
+function loadCache() {
   try {
     const v = storageGet('bp-plan-assignment');
     planAssignment = v ? JSON.parse(v) : JSON.parse(JSON.stringify(D.plan_assignment));
@@ -137,9 +186,62 @@ async function loadState() {
     devoChecked = v ? new Set(JSON.parse(v)) : new Set(D.checked_devo_dates);
   } catch(e) { devoChecked = new Set(D.checked_devo_dates); }
 }
-async function saveAssignment() { storageSet('bp-plan-assignment', JSON.stringify(planAssignment)); }
-async function savePlanChecked() { storageSet('bp-plan-checked', JSON.stringify([...planChecked])); }
-async function saveDevoChecked() { storageSet('bp-devo-checked', JSON.stringify([...devoChecked])); }
+
+function writeCache() {
+  storageSet('bp-plan-assignment', JSON.stringify(planAssignment));
+  storageSet('bp-plan-checked', JSON.stringify([...planChecked]));
+  storageSet('bp-devo-checked', JSON.stringify([...devoChecked]));
+}
+
+async function loadState() {
+  loadCache();
+  if (!sb || !userId) return;
+  setSync('sincronizando...');
+  const { data, error } = await sb.from('bible_progress')
+    .select('plan_assignment, plan_checked, devo_checked')
+    .eq('user_id', userId).maybeSingle();
+  if (error) { setSync('offline (usando este aparelho)', true); return; }
+  if (!data) {
+    // Primeiro acesso: semeia a nuvem com o que ja existe aqui.
+    const seed = { user_id: userId, plan_assignment: planAssignment,
+                   plan_checked: [...planChecked], devo_checked: [...devoChecked] };
+    const { error: insErr } = await sb.from('bible_progress').insert(seed);
+    if (insErr) { setSync('offline (usando este aparelho)', true); return; }
+  } else {
+    planAssignment = data.plan_assignment;
+    planChecked = new Set(data.plan_checked);
+    devoChecked = new Set(data.devo_checked);
+    writeCache();
+  }
+  setSync('sincronizado');
+}
+
+// Cada acao grava uma coluna so, entao nunca precisamos ler-modificar-escrever
+// o estado inteiro nem corremos risco de sobrescrever os outros dois blocos.
+async function pushColumn(col, value) {
+  if (!sb || !userId) return;
+  setSync('salvando...');
+  const { error } = await sb.from('bible_progress')
+    .update({ [col]: value, updated_at: new Date().toISOString() })
+    .eq('user_id', userId);
+  setSync(error ? 'nao salvou na nuvem' : 'sincronizado', !!error);
+}
+
+async function saveAssignment() {
+  const v = planAssignment;
+  storageSet('bp-plan-assignment', JSON.stringify(v));
+  await pushColumn('plan_assignment', v);
+}
+async function savePlanChecked() {
+  const v = [...planChecked];
+  storageSet('bp-plan-checked', JSON.stringify(v));
+  await pushColumn('plan_checked', v);
+}
+async function saveDevoChecked() {
+  const v = [...devoChecked];
+  storageSet('bp-devo-checked', JSON.stringify(v));
+  await pushColumn('devo_checked', v);
+}
 
 function computeReadSet() {
   const s = new Set(D.initial_read.map(([b,c]) => key(b,c)));
@@ -325,9 +427,56 @@ document.getElementById('tabBooks').addEventListener('click', () => {
 document.getElementById('searchPlan').addEventListener('input', () => renderPlan(document.getElementById('searchPlan').value));
 document.getElementById('searchBook').addEventListener('input', () => renderBooks(window._readSet, document.getElementById('searchBook').value));
 
-(async function init() {
+const LOGIN_ERRORS = {
+  'Invalid login credentials': 'Email ou senha incorretos.',
+  'Email not confirmed': 'Este email ainda nao foi confirmado no painel do Supabase.',
+  'Signups not allowed for this instance': 'Cadastro desativado. Este app so faz login.'
+};
+
+async function startApp() {
   await loadState();
   renderAll();
+  document.getElementById('loginOverlay').classList.add('hidden');
+}
+
+async function onSignedIn(session) {
+  userId = session.user.id;
+  document.getElementById('userEmail').textContent = session.user.email;
+  document.getElementById('userbar').classList.remove('hidden');
+  await startApp();
+}
+
+document.getElementById('loginForm').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const btn = document.getElementById('loginBtn');
+  const err = document.getElementById('loginErr');
+  err.classList.add('hidden');
+  btn.disabled = true; btn.textContent = 'entrando...';
+  const { data, error } = await sb.auth.signInWithPassword({
+    email: document.getElementById('loginEmail').value.trim(),
+    password: document.getElementById('loginPass').value
+  });
+  btn.disabled = false; btn.textContent = 'Entrar';
+  if (error) {
+    err.textContent = LOGIN_ERRORS[error.message] || error.message;
+    err.classList.remove('hidden');
+    return;
+  }
+  document.getElementById('loginPass').value = '';
+  await onSignedIn(data.session);
+});
+
+document.getElementById('logoutBtn').addEventListener('click', async () => {
+  if (sb) await sb.auth.signOut();
+  location.reload();
+});
+
+(async function init() {
+  if (!CLOUD_ENABLED) { await startApp(); return; }
+  sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  const { data: { session } } = await sb.auth.getSession();
+  if (session) await onSignedIn(session);
+  else document.getElementById('loginOverlay').classList.remove('hidden');
 })();
 </script>
 </body>
