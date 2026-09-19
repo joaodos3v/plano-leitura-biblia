@@ -1,2 +1,6 @@
 .playwright-mcp/
 .DS_Store
+
+# arquivos de instrucao/contexto, nao fazem parte do app
+SETUP_SUPABASE.md
+CONTEXTO_PROJETO.md
