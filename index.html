@@ -90,7 +90,7 @@
     <button type="button" id="logoutBtn">sair</button>
   </div>
   <div class="subtitle">09/09/2026 a 31/12/2026 &middot; devocional + plano</div>
-  <div class="note">Marcar o checkbox so atualiza o seu progresso. Se algum dia voce nao conseguir ler nada do plano, use "Excluir" naquele dia para mover os capitulos para os proximos dias.</div>
+  <div class="note">Marcar o checkbox so atualiza o seu progresso. Se algum dia voce nao conseguir ler nada do plano, use "Excluir" naquele dia: a leitura que falta e redistribuida por igual entre os dias seguintes, em ordem.</div>
 
   <div class="stats">
     <div class="stat"><div class="num" id="statRemaining">-</div><div class="lbl">restantes (total)</div></div>
@@ -147,8 +147,8 @@ function key(book,ch){ return book+'|'+ch; }
 // Preencher com os valores do projeto Supabase (ver SETUP_SUPABASE.md).
 // Enquanto estiverem com os placeholders, o app roda so com localStorage,
 // sem tela de login.
-const SUPABASE_URL = '__SUPABASE_URL__';
-const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__';
+const SUPABASE_URL = 'https://bsbodpkhnkydsmqypiem.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_rLpKPB99q4SUfSk1lQFSXA_XekeIohQ';
 const CLOUD_ENABLED = !SUPABASE_URL.startsWith('__');
 
 let sb = null;
@@ -269,34 +269,68 @@ function condense(chunk) {
   return parts.join('; ');
 }
 
+// Renderiza antes de gravar: os contadores respondem na hora e a ida ate o
+// Supabase acontece por tras, sinalizada pelo indicador de sincronizacao.
 async function togglePlanChecked(dt) {
   if (planChecked.has(dt)) planChecked.delete(dt); else planChecked.add(dt);
-  await savePlanChecked();
   renderAll();
+  await savePlanChecked();
 }
 async function toggleDevoChecked(dt) {
   if (devoChecked.has(dt)) devoChecked.delete(dt); else devoChecked.add(dt);
-  await saveDevoChecked();
   renderAll();
+  await saveDevoChecked();
 }
 
+// Posicao canonica de cada capitulo, para reordenar o monte redistribuido.
+const CANON_POS = {};
+D.all_chapters.forEach(([b,c], i) => CANON_POS[key(b,c)] = i);
+
+// Dias que ainda podem receber leitura: do dia dt em diante, sem os ja concluidos.
+function openDatesFrom(dt) {
+  return D.dates.filter(d => d >= dt && !planChecked.has(d));
+}
+
+// Divide `items` entre `days` o mais uniformemente possivel, preservando a
+// ordem: com 900 capitulos em 99 dias, 9 dias ficam com 10 e 90 ficam com 9.
+function spreadEvenly(items, days) {
+  const out = {};
+  if (days.length === 0) return out;
+  const base = Math.floor(items.length / days.length);
+  const extra = items.length % days.length;
+  let i = 0;
+  days.forEach((d, idx) => {
+    const take = base + (idx < extra ? 1 : 0);
+    out[d] = items.slice(i, i + take);
+    i += take;
+  });
+  return out;
+}
+
+// Excluir um dia nao empurra os capitulos daquele dia para a frente um a um:
+// recolhe TUDO que ainda falta ler dali em diante, reordena canonicamente (os
+// capitulos pulados voltam para o inicio da fila) e reparte o total por igual
+// entre os dias restantes. Assim a leitura segue em ordem e o atraso vira um
+// capitulo a mais espalhado por muitos dias, em vez de um dia sobrecarregado.
 function doExclude(dt) {
-  const chapters = planAssignment[dt] || [];
-  if (chapters.length === 0) return;
-  planAssignment[dt] = [];
+  if ((planAssignment[dt] || []).length === 0) return;
   planChecked.delete(dt);
-  const laterDates = D.dates.filter(d => d > dt);
-  let remaining = [...chapters];
-  for (const d of laterDates) {
-    if (remaining.length === 0) break;
-    if (planChecked.has(d)) continue;
-    const take = remaining.shift();
-    planAssignment[d] = [...(planAssignment[d]||[]), take];
+
+  const affected = openDatesFrom(dt);
+  const pool = [];
+  affected.forEach(d => pool.push(...(planAssignment[d] || [])));
+  pool.sort((a, b) => CANON_POS[key(a[0], a[1])] - CANON_POS[key(b[0], b[1])]);
+
+  const targets = affected.filter(d => d !== dt);
+  if (targets.length === 0) {
+    // Nao ha para onde empurrar: o proprio dia continua com tudo.
+    planAssignment[dt] = pool;
+  } else {
+    affected.forEach(d => planAssignment[d] = []);
+    const spread = spreadEvenly(pool, targets);
+    Object.keys(spread).forEach(d => planAssignment[d] = spread[d]);
   }
-  if (remaining.length > 0) {
-    const last = D.dates[D.dates.length-1];
-    planAssignment[last] = [...(planAssignment[last]||[]), ...remaining];
-  }
+
   saveAssignment();
   savePlanChecked();
   renderAll();
@@ -307,7 +341,7 @@ function openExcludeModal(dt) {
   pendingExcludeDate = dt;
   const chapters = planAssignment[dt] || [];
   document.getElementById('modalText').textContent =
-    `Isso vai remover "${condense(chapters)}" do dia ${fmtDate(dt)} e distribuir esses capitulos, um por dia, nos proximos dias ainda nao concluidos. Confirmar?`;
+    `Isso vai remover "${condense(chapters)}" do dia ${fmtDate(dt)} e redistribuir a leitura que falta por igual entre os ${Math.max(0, openDatesFrom(dt).length - 1)} dias seguintes ainda nao concluidos, mantendo a ordem dos capitulos. Confirmar?`;
   document.getElementById('modalOverlay').classList.remove('hidden');
 }
 function closeModal() {

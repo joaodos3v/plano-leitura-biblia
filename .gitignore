@@ -1,5 +1,12 @@
 .playwright-mcp/
 .DS_Store
+node_modules/
+test-results/
+playwright-report/
+package-lock.json
+
+# credenciais locais, nunca versionar
+.env
 
 # arquivos de instrucao/contexto, nao fazem parte do app
 SETUP_SUPABASE.md
