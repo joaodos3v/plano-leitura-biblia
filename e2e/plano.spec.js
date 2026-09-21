@@ -100,13 +100,14 @@ test.describe('excluir e redistribuir', () => {
 
       const alvo = abertos().find(d => (planAssignment[d] || []).length > 0);
       const antes = total();
-      const cargasAntes = abertos().map(d => (planAssignment[d] || []).length);
+      // Só os dias que recebem a redistribuição. Dias abertos ANTERIORES ao
+      // alvo podem estar vazios de exclusões passadas e nao sao reequilibrados.
+      const recebem = () => D.dates.filter(d => d > alvo && !planChecked.has(d));
+      const cargasAntes = recebem().map(d => (planAssignment[d] || []).length);
 
       doExclude(alvo);
 
-      const cargasDepois = abertos()
-        .filter(d => d !== alvo)
-        .map(d => (planAssignment[d] || []).length);
+      const cargasDepois = recebem().map(d => (planAssignment[d] || []).length);
 
       return {
         antes,
@@ -167,5 +168,69 @@ test.describe('excluir e redistribuir', () => {
     await expect(page.locator('#modalOverlay')).toBeHidden();
 
     expect(await page.evaluate(() => JSON.stringify(planAssignment))).not.toBe(antes);
+  });
+});
+
+// "Li parte": o dia fica so com o que foi lido, e o restante e espalhado
+// exatamente como o Excluir faz.
+test.describe('li ate aqui', () => {
+  test.skip(!hasCredentials, 'defina PLANO_EMAIL e PLANO_PASSWORD para rodar');
+
+  let snap;
+
+  test.beforeEach(async ({ page }) => {
+    await openLoggedIn(page);
+    snap = await snapshot(page);
+  });
+
+  test.afterEach(async ({ page }) => {
+    if (snap) await restore(page, snap);
+  });
+
+  test('divide o dia pelo capitulo escolhido, sem perder nem desordenar', async ({ page }) => {
+    const alvo = await page.evaluate(
+      () => D.dates.find(d => !planChecked.has(d) && (planAssignment[d] || []).length > 1)
+    );
+    const antes = await page.evaluate(d => ({
+      total: D.dates.reduce((n, x) => n + (planAssignment[x] || []).length, 0),
+      doDia: planAssignment[d].length
+    }), alvo);
+
+    await page.locator(`.partial-btn[data-date="${alvo}"]`).click();
+    // "li os 2 primeiros capitulos deste dia"
+    await page.locator(`.chip[data-date="${alvo}"][data-lidos="2"]`).click();
+    await expect(page.locator('#modalTitle')).toHaveText('Li ate aqui');
+    await page.click('#modalConfirm');
+    await expect(page.locator('#modalOverlay')).toBeHidden();
+
+    const depois = await page.evaluate(d => {
+      const seq = [];
+      D.dates.forEach(x =>
+        (planAssignment[x] || []).forEach(c => seq.push(CANON_POS[key(c[0], c[1])]))
+      );
+      let foraDeOrdem = 0;
+      for (let i = 1; i < seq.length; i++) if (seq[i] < seq[i - 1]) foraDeOrdem++;
+      return {
+        total: D.dates.reduce((n, x) => n + (planAssignment[x] || []).length, 0),
+        doDia: planAssignment[d].length,
+        marcado: planChecked.has(d),
+        foraDeOrdem
+      };
+    }, alvo);
+
+    expect(depois.doDia).toBe(2);              // ficou so o que foi lido
+    expect(depois.marcado).toBe(true);         // e o dia conta como concluido
+    expect(depois.total).toBe(antes.total);    // nada sumiu
+    expect(depois.foraDeOrdem).toBe(0);        // leitura segue em ordem
+    expect(antes.doDia).toBeGreaterThan(2);
+  });
+
+  test('nao oferece "Li parte" num dia ja concluido', async ({ page }) => {
+    const alvo = await page.evaluate(
+      () => D.dates.find(d => !planChecked.has(d) && (planAssignment[d] || []).length > 1)
+    );
+    await expect(page.locator(`.partial-btn[data-date="${alvo}"]`)).toBeVisible();
+    await page.click(`input[data-kind="plan"][data-date="${alvo}"]`);
+    await expect(page.locator(`.partial-btn[data-date="${alvo}"]`)).toHaveCount(0);
   });
 });

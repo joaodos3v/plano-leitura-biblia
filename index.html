@@ -68,6 +68,14 @@
   .userbar button { background: none; border: none; color: var(--accent); font-family: inherit; font-size: 0.78rem; cursor: pointer; text-decoration: underline; padding: 0; }
   .sync { padding: 2px 8px; border-radius: 99px; background: var(--accent-light); color: var(--accent); }
   .sync.err { background: #f6e3e3; color: var(--danger); }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 0 4px 27px; }
+  .chips-hint { width: 100%; font-size: 0.75rem; color: var(--muted); margin-bottom: 2px; }
+  .chip { min-width: 44px; min-height: 44px; padding: 4px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--ink); font-family: inherit; font-size: 0.8rem; cursor: pointer; }
+  .chip:hover { background: var(--accent-light); border-color: var(--accent); color: var(--accent); }
+  .chip .chip-book { display: block; font-size: 0.65rem; color: var(--muted); }
+  .partial-btn { background: none; border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px; font-family: inherit; font-size: 0.72rem; color: var(--accent); cursor: pointer; }
+  .partial-btn.open { background: var(--accent-light); border-color: var(--accent); }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
@@ -119,7 +127,7 @@
 
 <div id="modalOverlay" class="modal-overlay hidden">
   <div class="modal-box">
-    <h3>Excluir leitura do dia</h3>
+    <h3 id="modalTitle">Excluir leitura do dia</h3>
     <p id="modalText"></p>
     <div class="modal-actions">
       <button id="modalCancel">Cancelar</button>
@@ -286,11 +294,6 @@ async function toggleDevoChecked(dt) {
 const CANON_POS = {};
 D.all_chapters.forEach(([b,c], i) => CANON_POS[key(b,c)] = i);
 
-// Dias que ainda podem receber leitura: do dia dt em diante, sem os ja concluidos.
-function openDatesFrom(dt) {
-  return D.dates.filter(d => d >= dt && !planChecked.has(d));
-}
-
 // Divide `items` entre `days` o mais uniformemente possivel, preservando a
 // ordem: com 900 capitulos em 99 dias, 9 dias ficam com 10 e 90 ficam com 9.
 function spreadEvenly(items, days) {
@@ -307,51 +310,84 @@ function spreadEvenly(items, days) {
   return out;
 }
 
-// Excluir um dia nao empurra os capitulos daquele dia para a frente um a um:
-// recolhe TUDO que ainda falta ler dali em diante, reordena canonicamente (os
-// capitulos pulados voltam para o inicio da fila) e reparte o total por igual
-// entre os dias restantes. Assim a leitura segue em ordem e o atraso vira um
-// capitulo a mais espalhado por muitos dias, em vez de um dia sobrecarregado.
-function doExclude(dt) {
-  if ((planAssignment[dt] || []).length === 0) return;
-  planChecked.delete(dt);
+// Coracao do replanejamento. `lidos` e quantos capitulos do dia voce de fato
+// leu (0 = nao leu nada, que e o botao "Excluir"). O dia fica so com esses, e
+// TUDO o que falta dali em diante -- o resto do dia mais os dias seguintes --
+// e recolhido, reordenado canonicamente e repartido por igual entre os dias
+// que sobram. Assim a leitura nunca sai de ordem e o atraso vira um capitulo
+// a mais espalhado por muitos dias, em vez de um dia sobrecarregado.
+function replanejar(dt, lidos) {
+  const chapters = planAssignment[dt] || [];
+  if (chapters.length === 0) return;
 
-  const affected = openDatesFrom(dt);
-  const pool = [];
-  affected.forEach(d => pool.push(...(planAssignment[d] || [])));
+  const targets = D.dates.filter(d => d > dt && !planChecked.has(d));
+  if (targets.length === 0) return;  // 31/12: nao ha para onde empurrar
+
+  const pool = chapters.slice(lidos);
+  targets.forEach(d => pool.push(...(planAssignment[d] || [])));
   pool.sort((a, b) => CANON_POS[key(a[0], a[1])] - CANON_POS[key(b[0], b[1])]);
 
-  const targets = affected.filter(d => d !== dt);
-  if (targets.length === 0) {
-    // Nao ha para onde empurrar: o proprio dia continua com tudo.
-    planAssignment[dt] = pool;
-  } else {
-    affected.forEach(d => planAssignment[d] = []);
-    const spread = spreadEvenly(pool, targets);
-    Object.keys(spread).forEach(d => planAssignment[d] = spread[d]);
-  }
+  planAssignment[dt] = chapters.slice(0, lidos);
+  targets.forEach(d => planAssignment[d] = []);
+  const spread = spreadEvenly(pool, targets);
+  Object.keys(spread).forEach(d => planAssignment[d] = spread[d]);
+
+  // Leu parte do dia? O dia esta concluido. Nao leu nada? Volta a ficar aberto.
+  if (lidos > 0) planChecked.add(dt); else planChecked.delete(dt);
 
   saveAssignment();
   savePlanChecked();
   renderAll();
 }
 
-let pendingExcludeDate = null;
-function openExcludeModal(dt) {
-  pendingExcludeDate = dt;
-  const chapters = planAssignment[dt] || [];
-  document.getElementById('modalText').textContent =
-    `Isso vai remover "${condense(chapters)}" do dia ${fmtDate(dt)} e redistribuir a leitura que falta por igual entre os ${Math.max(0, openDatesFrom(dt).length - 1)} dias seguintes ainda nao concluidos, mantendo a ordem dos capitulos. Confirmar?`;
+function doExclude(dt) { replanejar(dt, 0); }
+
+let pendingAction = null;
+function openConfirm(titulo, texto, rotuloConfirmar, acao) {
+  pendingAction = acao;
+  document.getElementById('modalTitle').textContent = titulo;
+  document.getElementById('modalText').textContent = texto;
+  document.getElementById('modalConfirm').textContent = rotuloConfirmar;
   document.getElementById('modalOverlay').classList.remove('hidden');
 }
 function closeModal() {
-  pendingExcludeDate = null;
+  pendingAction = null;
   document.getElementById('modalOverlay').classList.add('hidden');
 }
+
+function diasQueRecebem(dt) {
+  return D.dates.filter(d => d > dt && !planChecked.has(d)).length;
+}
+
+function openExcludeModal(dt) {
+  const chapters = planAssignment[dt] || [];
+  openConfirm(
+    'Excluir leitura do dia',
+    `Isso vai remover "${condense(chapters)}" do dia ${fmtDate(dt)} e redistribuir a leitura que falta por igual entre os ${diasQueRecebem(dt)} dias seguintes ainda nao concluidos, mantendo a ordem dos capitulos. Confirmar?`,
+    'Excluir e redistribuir',
+    () => doExclude(dt)
+  );
+}
+
+// "Li ate aqui": o dia fica com os `lidos` primeiros capitulos e o resto vai
+// para a frente, espalhado do mesmo jeito que o Excluir faz.
+function openPartialModal(dt, lidos) {
+  const chapters = planAssignment[dt] || [];
+  const ficam = chapters.slice(0, lidos);
+  const sobram = chapters.slice(lidos);
+  openConfirm(
+    'Li ate aqui',
+    `Marcar ${fmtDate(dt)} como lido ate "${condense(ficam)}". Os ${sobram.length} capitulos restantes ("${condense(sobram)}") serao redistribuidos por igual entre os ${diasQueRecebem(dt)} dias seguintes, mantendo a ordem. Confirmar?`,
+    'Confirmar',
+    () => replanejar(dt, lidos)
+  );
+}
+
 document.getElementById('modalCancel').addEventListener('click', closeModal);
 document.getElementById('modalConfirm').addEventListener('click', () => {
-  if (pendingExcludeDate) doExclude(pendingExcludeDate);
+  const acao = pendingAction;
   closeModal();
+  if (acao) acao();
 });
 
 function renderStats(readSet) {
@@ -367,6 +403,7 @@ function renderStats(readSet) {
   document.getElementById('dailyProgress').style.width = (doneDays/D.dates.length*100) + '%';
 }
 
+let chipsOpenFor = null;  // dia com a faixa de capitulos aberta
 function renderPlan(filter) {
   const list = document.getElementById('planList');
   list.innerHTML = '';
@@ -394,11 +431,26 @@ function renderPlan(filter) {
     }
     if (chapters.length > 0) {
       const checked = planChecked.has(dt);
+      // "Li parte" so faz sentido num dia ainda aberto, com mais de um capitulo
+      // e que tenha para onde empurrar o restante.
+      const podeDividir = !checked && chapters.length > 1 && diasQueRecebem(dt) > 0;
+      const aberto = chipsOpenFor === dt;
       rows += `<div class="row ${checked?'done':''}">
         <input type="checkbox" data-kind="plan" data-date="${dt}" ${checked?'checked':''}>
         <div class="row-label"><span class="tag">Plano</span>${planText}</div>
-        <div class="row-actions"><button class="exclude-btn" data-date="${dt}">Excluir</button></div>
+        <div class="row-actions">
+          ${podeDividir ? `<button class="partial-btn ${aberto?'open':''}" data-date="${dt}">Li parte</button>` : ''}
+          <button class="exclude-btn" data-date="${dt}">Excluir</button>
+        </div>
       </div>`;
+      if (podeDividir && aberto) {
+        // O ultimo capitulo nao aparece: "li tudo" e o proprio checkbox.
+        const chips = chapters.slice(0, -1).map((c, i) =>
+          `<button class="chip" data-date="${dt}" data-lidos="${i+1}" title="Li ${c[0]} ${c[1]} e paro aqui">
+             <span class="chip-book">${c[0]}</span>${c[1]}
+           </button>`).join('');
+        rows += `<div class="chips"><div class="chips-hint">Ate qual capitulo voce leu?</div>${chips}</div>`;
+      }
     } else {
       rows += `<div class="empty-note">Sem capitulos do plano neste dia.</div>`;
     }
@@ -410,6 +462,14 @@ function renderPlan(filter) {
   list.querySelectorAll('input[data-kind="devo"]').forEach(cb => cb.addEventListener('change', () => toggleDevoChecked(cb.dataset.date)));
   list.querySelectorAll('input[data-kind="plan"]').forEach(cb => cb.addEventListener('change', () => togglePlanChecked(cb.dataset.date)));
   list.querySelectorAll('.exclude-btn').forEach(btn => btn.addEventListener('click', () => openExcludeModal(btn.dataset.date)));
+  list.querySelectorAll('.partial-btn').forEach(btn => btn.addEventListener('click', () => {
+    chipsOpenFor = chipsOpenFor === btn.dataset.date ? null : btn.dataset.date;
+    renderPlan(document.getElementById('searchPlan').value);
+  }));
+  list.querySelectorAll('.chip').forEach(btn => btn.addEventListener('click', () => {
+    chipsOpenFor = null;
+    openPartialModal(btn.dataset.date, Number(btn.dataset.lidos));
+  }));
 }
 
 function renderBooks(readSet, filter) {
