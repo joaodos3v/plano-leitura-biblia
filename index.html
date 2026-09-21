@@ -2,7 +2,16 @@
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+
+<!-- PWA: instalavel na tela de inicio do iPhone via Safari > Compartilhar > Adicionar a Tela de Inicio -->
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#7a5c3e">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Plano Biblia">
 <title>Plano de Leitura da Biblia</title>
 <style>
   :root {
@@ -12,7 +21,11 @@
   }
   * { box-sizing: border-box; }
   body { margin: 0; font-family: Georgia, 'Times New Roman', serif; background: var(--bg); color: var(--ink); }
-  .wrap { max-width: 760px; margin: 0 auto; padding: 20px 16px 60px; }
+  .wrap {
+    max-width: 760px; margin: 0 auto;
+    padding: calc(20px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
+             calc(60px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
+  }
   h1 { font-size: 1.4rem; margin: 0 0 4px; }
   .subtitle { color: var(--muted); font-size: 0.85rem; margin-bottom: 16px; }
   .stats { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
@@ -451,7 +464,9 @@ function renderPlan(filter) {
            </button>`).join('');
         rows += `<div class="chips"><div class="chips-hint">Ate qual capitulo voce leu?</div>${chips}</div>`;
       }
-    } else {
+    } else if (dt <= today) {
+      // Dia passado ou hoje sem capitulos: voce excluiu ou ja redistribuiu.
+      // Num dia futuro isso seria inconsistencia, entao ali nao anunciamos nada.
       rows += `<div class="empty-note">Sem capitulos do plano neste dia.</div>`;
     }
     card.innerHTML = `<div class="day-date">${dateLabel}</div>${rows}`;
@@ -564,6 +579,10 @@ document.getElementById('logoutBtn').addEventListener('click', async () => {
   if (sb) await sb.auth.signOut();
   location.reload();
 });
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+}
 
 (async function init() {
   if (!CLOUD_ENABLED) { await startApp(); return; }

@@ -1,23 +1,14 @@
 // Testes das regras do plano de leitura.
 //
-// ATENCAO: escrevem na mesma linha do Supabase que o app usa de verdade.
-// Cada teste que muda estado restaura o snapshot no final.
+// Rodam contra o Supabase falso de e2e/fake-supabase.js, nunca contra o
+// projeto real: cada teste ganha um banco em memoria proprio e descartavel.
 
-const { test, expect } = require('@playwright/test');
-const { openLoggedIn, hasCredentials, snapshot, restore } = require('./helpers');
+const { test, expect } = require('./fixtures');
+const { openLoggedIn } = require('./helpers');
 
 test.describe('plano de leitura', () => {
-  test.skip(!hasCredentials, 'defina PLANO_EMAIL e PLANO_PASSWORD para rodar');
-
-  let snap;
-
   test.beforeEach(async ({ page }) => {
     await openLoggedIn(page);
-    snap = await snapshot(page);
-  });
-
-  test.afterEach(async ({ page }) => {
-    if (snap) await restore(page, snap);
   });
 
   test('renderiza os dias do plano e o devocional', async ({ page }) => {
@@ -42,7 +33,7 @@ test.describe('plano de leitura', () => {
     });
 
     await page.click(`input[data-kind="plan"][data-date="${antes.alvo}"]`);
-    await expect(page.locator('#syncState')).toHaveText('sincronizado', { timeout: 15000 });
+    await expect(page.locator('#syncState')).toHaveText('sincronizado');
 
     const depois = await page.evaluate(() => JSON.stringify(planAssignment));
     expect(depois).toBe(antes.assignment);
@@ -54,10 +45,10 @@ test.describe('plano de leitura', () => {
     );
 
     await page.click(`input[data-kind="plan"][data-date="${alvo}"]`);
-    await expect(page.locator('#syncState')).toHaveText('sincronizado', { timeout: 15000 });
+    await expect(page.locator('#syncState')).toHaveText('sincronizado');
 
     await page.reload();
-    await expect(page.locator('#syncState')).toHaveText('sincronizado', { timeout: 15000 });
+    await expect(page.locator('#syncState')).toHaveText('sincronizado');
     await expect(page.locator(`input[data-kind="plan"][data-date="${alvo}"]`)).toBeChecked();
   });
 
@@ -72,7 +63,7 @@ test.describe('plano de leitura', () => {
 
     // toHaveText tem retry: nao corre contra o render nem contra a gravacao.
     await expect(page.locator('#statRead'))
-      .toHaveText(String(Number(lidosAntes) + quantos), { timeout: 15000 });
+      .toHaveText(String(Number(lidosAntes) + quantos));
   });
 });
 
@@ -80,17 +71,8 @@ test.describe('plano de leitura', () => {
 // falta ler dali em diante e reparte por igual entre os dias restantes,
 // mantendo a ordem canonica.
 test.describe('excluir e redistribuir', () => {
-  test.skip(!hasCredentials, 'defina PLANO_EMAIL e PLANO_PASSWORD para rodar');
-
-  let snap;
-
   test.beforeEach(async ({ page }) => {
     await openLoggedIn(page);
-    snap = await snapshot(page);
-  });
-
-  test.afterEach(async ({ page }) => {
-    if (snap) await restore(page, snap);
   });
 
   test('nao perde capitulos, esvazia o dia e mantem a carga equilibrada', async ({ page }) => {
@@ -174,17 +156,8 @@ test.describe('excluir e redistribuir', () => {
 // "Li parte": o dia fica so com o que foi lido, e o restante e espalhado
 // exatamente como o Excluir faz.
 test.describe('li ate aqui', () => {
-  test.skip(!hasCredentials, 'defina PLANO_EMAIL e PLANO_PASSWORD para rodar');
-
-  let snap;
-
   test.beforeEach(async ({ page }) => {
     await openLoggedIn(page);
-    snap = await snapshot(page);
-  });
-
-  test.afterEach(async ({ page }) => {
-    if (snap) await restore(page, snap);
   });
 
   test('divide o dia pelo capitulo escolhido, sem perder nem desordenar', async ({ page }) => {
@@ -232,5 +205,45 @@ test.describe('li ate aqui', () => {
     await expect(page.locator(`.partial-btn[data-date="${alvo}"]`)).toBeVisible();
     await page.click(`input[data-kind="plan"][data-date="${alvo}"]`);
     await expect(page.locator(`.partial-btn[data-date="${alvo}"]`)).toHaveCount(0);
+  });
+});
+
+// Um dia FUTURO sem capitulos seria inconsistencia, entao nao pode anunciar
+// "Sem capitulos do plano neste dia" -- essa nota so cabe em hoje ou no passado.
+test.describe('dias sem capitulos', () => {
+  test.beforeEach(async ({ page }) => {
+    await openLoggedIn(page);
+  });
+
+  test('a nota de dia vazio nunca aparece num dia futuro', async ({ page }) => {
+    const r = await page.evaluate(() => {
+      const hoje = todayISO();
+      // esvazia um dia futuro de proposito e re-renderiza
+      const futuro = D.dates.find(d => d > hoje && (planAssignment[d] || []).length > 0);
+      planAssignment[futuro] = [];
+      renderAll();
+
+      const cards = [...document.querySelectorAll('.day-card')];
+      const comNota = cards.filter(c => c.querySelector('.empty-note'));
+      const datasComNota = comNota.map(c => c.querySelector('.day-date').textContent);
+      return { futuro, hoje, quantasNotas: comNota.length, datasComNota };
+    });
+
+    // nenhuma nota pode pertencer a um dia posterior a hoje
+    const rotuloFuturo = await page.evaluate(d => fmtDate(d), r.futuro);
+    expect(r.datasComNota).not.toContain(rotuloFuturo);
+  });
+
+  test('a nota continua aparecendo num dia passado esvaziado', async ({ page }) => {
+    const temNota = await page.evaluate(() => {
+      const hoje = todayISO();
+      const passado = D.dates.find(d => d < hoje);
+      planAssignment[passado] = [];
+      renderAll();
+      const card = [...document.querySelectorAll('.day-card')]
+        .find(c => c.querySelector('.day-date').textContent === fmtDate(passado));
+      return !!card.querySelector('.empty-note');
+    });
+    expect(temNota).toBe(true);
   });
 });

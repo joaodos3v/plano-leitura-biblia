@@ -1,7 +1,7 @@
 // Testes de autenticacao. Os tres primeiros nao precisam de senha nenhuma.
 
-const { test, expect } = require('@playwright/test');
-const { openApp, openLoggedIn, hasCredentials } = require('./helpers');
+const { test, expect, USUARIO } = require('./fixtures');
+const { openApp, login, openLoggedIn } = require('./helpers');
 
 test.describe('autenticacao', () => {
   test('exige login antes de mostrar o plano', async ({ page }) => {
@@ -15,11 +15,9 @@ test.describe('autenticacao', () => {
 
   test('senha errada mostra mensagem em portugues e nao destrava o app', async ({ page }) => {
     await openApp(page);
-    await page.fill('#loginEmail', 'joaovitorvv@gmail.com');
-    await page.fill('#loginPass', 'senha-errada-de-proposito');
-    await page.click('#loginBtn');
+    await login(page, USUARIO.email, 'senha-errada-de-proposito');
 
-    await expect(page.locator('#loginErr')).toBeVisible({ timeout: 15000 });
+    await expect(page.locator('#loginErr')).toBeVisible();
     await expect(page.locator('#loginErr')).toHaveText('Email ou senha incorretos.');
     await expect(page.locator('#loginOverlay')).toBeVisible();
     // o botao volta a funcionar para uma nova tentativa
@@ -41,12 +39,10 @@ test.describe('autenticacao', () => {
     expect(temScrollLateral).toBe(false);
   });
 
-  test.describe('com credenciais', () => {
-    test.skip(!hasCredentials, 'defina PLANO_EMAIL e PLANO_PASSWORD para rodar');
-
+  test.describe('depois de entrar', () => {
     test('login entra, sincroniza e mostra o email', async ({ page }) => {
       await openLoggedIn(page);
-      await expect(page.locator('#userEmail')).toHaveText(process.env.PLANO_EMAIL);
+      await expect(page.locator('#userEmail')).toHaveText(USUARIO.email);
       await expect(page.locator('#syncState')).toHaveText('sincronizado');
       await expect(page.locator('#syncState')).not.toHaveClass(/err/);
     });
@@ -54,14 +50,14 @@ test.describe('autenticacao', () => {
     test('a sessao sobrevive ao reload, sem pedir senha de novo', async ({ page }) => {
       await openLoggedIn(page);
       await page.reload();
-      await expect(page.locator('#loginOverlay')).toBeHidden({ timeout: 15000 });
+      await expect(page.locator('#loginOverlay')).toBeHidden();
       await expect(page.locator('#userbar')).toBeVisible();
     });
 
     test('sair volta para a tela de login', async ({ page }) => {
       await openLoggedIn(page);
       await page.click('#logoutBtn');
-      await expect(page.locator('#loginOverlay')).toBeVisible({ timeout: 15000 });
+      await expect(page.locator('#loginOverlay')).toBeVisible();
       await expect(page.locator('#userbar')).toBeHidden();
     });
   });
