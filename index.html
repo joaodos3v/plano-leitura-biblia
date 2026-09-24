@@ -89,6 +89,15 @@
   .chip .chip-book { display: block; font-size: 0.65rem; color: var(--muted); }
   .partial-btn { background: none; border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px; font-family: inherit; font-size: 0.72rem; color: var(--accent); cursor: pointer; }
   .partial-btn.open { background: var(--accent-light); border-color: var(--accent); }
+  .devo-exclude-btn { background: none; border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px; font-family: inherit; font-size: 0.72rem; color: var(--devo); cursor: pointer; }
+
+  /* No celular esses botoes sao tocados com o dedo: 21px de altura nao da. */
+  @media (max-width: 640px) {
+    .exclude-btn, .partial-btn, .devo-exclude-btn {
+      min-height: 40px; padding: 8px 12px; font-size: 0.78rem;
+    }
+    .row-actions { display: flex; gap: 6px; align-items: flex-start; }
+  }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
@@ -178,8 +187,30 @@ let userId = null;
 let planAssignment = {};  // date -> [[book,ch],...] mutable ONLY via exclude
 let planChecked = new Set();
 let devoChecked = new Set();
+let devoSkipped = new Set();  // dias em que o devocional foi adiado
 let devoByDate = {};
-D.devo_schedule.forEach(dd => devoByDate[dd.date] = dd);
+
+// A ordem dos 67 devocionais nunca muda -- so muda em que dia cada um cai.
+// Por isso guardamos apenas os dias pulados e derivamos a agenda: caminha
+// pelos dias do plano, pula os excluidos e vai entregando a ordem. Excluir um
+// dia empurra todo o resto para frente sozinho.
+function rebuildDevo() {
+  devoByDate = {};
+  const ordem = D.devo_schedule;
+  const inicio = ordem[0].date;
+  let i = 0;
+  for (const dt of D.dates) {
+    if (dt < inicio) continue;
+    if (i >= ordem.length) break;
+    if (devoSkipped.has(dt)) continue;
+    devoByDate[dt] = { ...ordem[i], date: dt };
+    i++;
+  }
+  // Se os adiamentos passarem de 31/12 sobram devocionais sem dia; eles ficam
+  // de fora da agenda e aparecem no contador de pendentes.
+  devoAlemDoCalendario = ordem.length - i;
+}
+let devoAlemDoCalendario = 0;
 
 function storageGet(k) { try { return localStorage.getItem(k); } catch(e) { return null; } }
 function storageSet(k, v) { try { localStorage.setItem(k, v); } catch(e) {} }
@@ -206,32 +237,43 @@ function loadCache() {
     const v = storageGet('bp-devo-checked');
     devoChecked = v ? new Set(JSON.parse(v)) : new Set(D.checked_devo_dates);
   } catch(e) { devoChecked = new Set(D.checked_devo_dates); }
+  try {
+    const v = storageGet('bp-devo-skipped');
+    devoSkipped = v ? new Set(JSON.parse(v)) : new Set();
+  } catch(e) { devoSkipped = new Set(); }
+  rebuildDevo();
 }
 
 function writeCache() {
   storageSet('bp-plan-assignment', JSON.stringify(planAssignment));
   storageSet('bp-plan-checked', JSON.stringify([...planChecked]));
   storageSet('bp-devo-checked', JSON.stringify([...devoChecked]));
+  storageSet('bp-devo-skipped', JSON.stringify([...devoSkipped]));
 }
 
 async function loadState() {
   loadCache();
   if (!sb || !userId) return;
   setSync('sincronizando...');
+  // select('*') em vez de listar colunas: assim o app continua funcionando
+  // num banco que ainda nao tem a coluna devo_skipped.
   const { data, error } = await sb.from('bible_progress')
-    .select('plan_assignment, plan_checked, devo_checked')
+    .select('*')
     .eq('user_id', userId).maybeSingle();
   if (error) { setSync('offline (usando este aparelho)', true); return; }
   if (!data) {
     // Primeiro acesso: semeia a nuvem com o que ja existe aqui.
     const seed = { user_id: userId, plan_assignment: planAssignment,
-                   plan_checked: [...planChecked], devo_checked: [...devoChecked] };
+                   plan_checked: [...planChecked], devo_checked: [...devoChecked],
+                   devo_skipped: [...devoSkipped] };
     const { error: insErr } = await sb.from('bible_progress').insert(seed);
     if (insErr) { setSync('offline (usando este aparelho)', true); return; }
   } else {
     planAssignment = data.plan_assignment;
     planChecked = new Set(data.plan_checked);
     devoChecked = new Set(data.devo_checked);
+    devoSkipped = new Set(data.devo_skipped || []);
+    rebuildDevo();
     writeCache();
   }
   setSync('sincronizado');
@@ -262,6 +304,11 @@ async function saveDevoChecked() {
   const v = [...devoChecked];
   storageSet('bp-devo-checked', JSON.stringify(v));
   await pushColumn('devo_checked', v);
+}
+async function saveDevoSkipped() {
+  const v = [...devoSkipped];
+  storageSet('bp-devo-skipped', JSON.stringify(v));
+  await pushColumn('devo_skipped', v);
 }
 
 function computeReadSet() {
@@ -355,6 +402,24 @@ function replanejar(dt, lidos) {
 
 function doExclude(dt) { replanejar(dt, 0); }
 
+// Adia o devocional: o dia fica sem devocional e toda a fila anda um dia.
+function adiarDevocional(dt) {
+  if (!devoByDate[dt]) return;
+  devoSkipped.add(dt);
+  devoChecked.delete(dt);
+  rebuildDevo();
+  saveDevoSkipped();
+  saveDevoChecked();
+  renderAll();
+}
+
+// Quantos devocionais ficariam sem dia se `dt` fosse adiado.
+function devocionaisQueNaoCabem(dt) {
+  const aindaNaFila = Object.keys(devoByDate).filter(d => d >= dt).length + devoAlemDoCalendario;
+  const diasLivres = D.dates.filter(d => d > dt && !devoSkipped.has(d)).length;
+  return Math.max(0, aindaNaFila - diasLivres);
+}
+
 let pendingAction = null;
 function openConfirm(titulo, texto, rotuloConfirmar, acao) {
   pendingAction = acao;
@@ -379,6 +444,20 @@ function openExcludeModal(dt) {
     `Isso vai remover "${condense(chapters)}" do dia ${fmtDate(dt)} e redistribuir a leitura que falta por igual entre os ${diasQueRecebem(dt)} dias seguintes ainda nao concluidos, mantendo a ordem dos capitulos. Confirmar?`,
     'Excluir e redistribuir',
     () => doExclude(dt)
+  );
+}
+
+function openDevoModal(dt) {
+  const dd = devoByDate[dt];
+  const sobrando = devocionaisQueNaoCabem(dt);
+  openConfirm(
+    'Adiar devocional',
+    `Isso vai tirar "${dd.label}" do dia ${fmtDate(dt)} e empurrar todo o devocional um dia para a frente.` +
+    (sobrando > 0
+      ? ` Atencao: ${sobrando} devocional(is) passariam de 31/12 e ficariam sem dia.`
+      : ''),
+    'Adiar um dia',
+    () => adiarDevocional(dt)
   );
 }
 
@@ -410,7 +489,8 @@ function renderStats(readSet) {
   const futureDates = D.dates.filter(dt => dt >= today);
   const totalFutureChapters = futureDates.reduce((sum,dt) => sum + (planAssignment[dt]||[]).length, 0);
   document.getElementById('statPerDay').textContent = futureDates.length > 0 ? (totalFutureChapters/futureDates.length).toFixed(1) : '0';
-  const pendingDevo = D.devo_schedule.filter(dd => !devoChecked.has(dd.date)).length;
+  const pendingDevo = Object.keys(devoByDate).filter(dt => !devoChecked.has(dt)).length
+                    + devoAlemDoCalendario;
   document.getElementById('statDevoPending').textContent = pendingDevo;
   const doneDays = D.dates.filter(dt => planChecked.has(dt)).length;
   document.getElementById('dailyProgress').style.width = (doneDays/D.dates.length*100) + '%';
@@ -440,6 +520,7 @@ function renderPlan(filter) {
       rows += `<div class="row ${checked?'done':''}">
         <input type="checkbox" data-kind="devo" data-date="${dt}" ${checked?'checked':''}>
         <div class="row-label"><span class="tag">Devocional</span>${devo.label}</div>
+        <div class="row-actions"><button class="devo-exclude-btn" data-date="${dt}">Excluir</button></div>
       </div>`;
     }
     if (chapters.length > 0) {
@@ -477,6 +558,7 @@ function renderPlan(filter) {
   list.querySelectorAll('input[data-kind="devo"]').forEach(cb => cb.addEventListener('change', () => toggleDevoChecked(cb.dataset.date)));
   list.querySelectorAll('input[data-kind="plan"]').forEach(cb => cb.addEventListener('change', () => togglePlanChecked(cb.dataset.date)));
   list.querySelectorAll('.exclude-btn').forEach(btn => btn.addEventListener('click', () => openExcludeModal(btn.dataset.date)));
+  list.querySelectorAll('.devo-exclude-btn').forEach(btn => btn.addEventListener('click', () => openDevoModal(btn.dataset.date)));
   list.querySelectorAll('.partial-btn').forEach(btn => btn.addEventListener('click', () => {
     chipsOpenFor = chipsOpenFor === btn.dataset.date ? null : btn.dataset.date;
     renderPlan(document.getElementById('searchPlan').value);
