@@ -36,4 +36,13 @@ async function openLoggedIn(page) {
   );
 }
 
-module.exports = { openApp, login, openLoggedIn };
+// Os dias ja passados ficam numa secao recolhida. Testes que precisam
+// alcanca-los abrem a secao primeiro.
+async function expandirPassados(page) {
+  const toggle = page.locator('#pastToggle');
+  if (await toggle.count() === 0) return;        // nenhum dia passado ainda
+  if ((await toggle.textContent()).startsWith('\u25be')) return;  // ja aberta
+  await toggle.click();
+}
+
+module.exports = { openApp, login, openLoggedIn, expandirPassados };

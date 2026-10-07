@@ -4,6 +4,9 @@
 const { test, expect } = require('./fixtures');
 const { openLoggedIn } = require('./helpers');
 
+// O "hoje" vem do proprio app, para o teste nao ter sua propria nocao de data.
+const hojeDoApp = (page) => page.evaluate(() => todayISO());
+
 // Ordem da agenda visivel, do primeiro dia ao ultimo.
 const lerAgenda = (page) => page.evaluate(
   () => Object.keys(devoByDate).sort().map(d => ({ data: d, label: devoByDate[d].label }))
@@ -15,8 +18,9 @@ test.describe('adiar devocional', () => {
   });
 
   test('empurra aquele devocional e todos os seguintes em um dia', async ({ page }) => {
+    const hoje = await hojeDoApp(page);
     const antes = await lerAgenda(page);
-    const i = antes.findIndex(x => x.data >= '2026-09-24');
+    const i = antes.findIndex(x => x.data >= hoje);
     const alvo = antes[i];
 
     await page.locator(`.devo-exclude-btn[data-date="${alvo.data}"]`).click();
@@ -43,7 +47,7 @@ test.describe('adiar devocional', () => {
   test('a ordem dos 67 devocionais e preservada', async ({ page }) => {
     const ordemOriginal = await page.evaluate(() => D.devo_schedule.map(d => d.label));
 
-    const alvo = await page.evaluate(() => Object.keys(devoByDate).sort().find(d => d >= '2026-09-24'));
+    const alvo = await page.evaluate(() => Object.keys(devoByDate).sort().find(d => d >= todayISO()));
     await page.locator(`.devo-exclude-btn[data-date="${alvo}"]`).click();
     await page.click('#modalConfirm');
     await expect(page.locator('#modalOverlay')).toBeHidden();
@@ -53,8 +57,9 @@ test.describe('adiar devocional', () => {
   });
 
   test('adiar duas vezes joga o devocional dois dias para frente', async ({ page }) => {
+    const hoje = await hojeDoApp(page);
     const antes = await lerAgenda(page);
-    const alvo = antes.find(x => x.data >= '2026-09-24');
+    const alvo = antes.find(x => x.data >= hoje);
 
     // onde esse capitulo estava, na linha do tempo
     const posicaoAntes = await page.evaluate(d => D.dates.indexOf(d), alvo.data);
@@ -74,7 +79,7 @@ test.describe('adiar devocional', () => {
   });
 
   test('o adiamento sobrevive ao reload e chega ao banco', async ({ page, supabase }) => {
-    const alvo = await page.evaluate(() => Object.keys(devoByDate).sort().find(d => d >= '2026-09-24'));
+    const alvo = await page.evaluate(() => Object.keys(devoByDate).sort().find(d => d >= todayISO()));
     await page.locator(`.devo-exclude-btn[data-date="${alvo}"]`).click();
     await page.click('#modalConfirm');
     await expect(page.locator('#syncState')).toHaveText('sincronizado');
@@ -89,7 +94,7 @@ test.describe('adiar devocional', () => {
 
   test('o contador de devocionais pendentes nao muda ao adiar', async ({ page }) => {
     const antes = await page.locator('#statDevoPending').textContent();
-    const alvo = await page.evaluate(() => Object.keys(devoByDate).sort().find(d => d >= '2026-09-24'));
+    const alvo = await page.evaluate(() => Object.keys(devoByDate).sort().find(d => d >= todayISO()));
     await page.locator(`.devo-exclude-btn[data-date="${alvo}"]`).click();
     await page.click('#modalConfirm');
     await expect(page.locator('#modalOverlay')).toBeHidden();
@@ -98,7 +103,7 @@ test.describe('adiar devocional', () => {
   });
 
   test('adiar um dia ja marcado desmarca, porque ele deixou de ter devocional', async ({ page }) => {
-    const alvo = await page.evaluate(() => Object.keys(devoByDate).sort().find(d => d >= '2026-09-24'));
+    const alvo = await page.evaluate(() => Object.keys(devoByDate).sort().find(d => d >= todayISO()));
     await page.click(`input[data-kind="devo"][data-date="${alvo}"]`);
     await expect(page.locator('#syncState')).toHaveText('sincronizado');
 
@@ -111,8 +116,9 @@ test.describe('adiar devocional', () => {
   });
 
   test('o modal avisa antes e nao faz nada se cancelar', async ({ page }) => {
+    const hoje = await hojeDoApp(page);
     const antes = await lerAgenda(page);
-    const alvo = antes.find(x => x.data >= '2026-09-24');
+    const alvo = antes.find(x => x.data >= hoje);
 
     await page.locator(`.devo-exclude-btn[data-date="${alvo.data}"]`).click();
     await expect(page.locator('#modalText')).toContainText(alvo.label);

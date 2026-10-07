@@ -18,7 +18,7 @@ test.describe('isolamento da producao', () => {
     expect(supabase.linha).not.toBeNull();
 
     const alvo = await page.evaluate(
-      () => D.dates.find(d => !planChecked.has(d) && (planAssignment[d] || []).length)
+      () => D.dates.find(d => d >= todayISO() && !planChecked.has(d) && (planAssignment[d] || []).length)
     );
     await page.click(`input[data-kind="plan"][data-date="${alvo}"]`);
     await expect(page.locator('#syncState')).toHaveText('sincronizado');

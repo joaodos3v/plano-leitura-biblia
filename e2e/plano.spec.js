@@ -4,7 +4,7 @@
 // projeto real: cada teste ganha um banco em memoria proprio e descartavel.
 
 const { test, expect } = require('./fixtures');
-const { openLoggedIn } = require('./helpers');
+const { openLoggedIn, expandirPassados } = require('./helpers');
 
 test.describe('plano de leitura', () => {
   test.beforeEach(async ({ page }) => {
@@ -12,6 +12,7 @@ test.describe('plano de leitura', () => {
   });
 
   test('renderiza os dias do plano e o devocional', async ({ page }) => {
+    await expandirPassados(page);   // a contagem e do calendario inteiro
     const contagem = await page.evaluate(() => ({
       dias: D.dates.length,
       linhasDePlano: document.querySelectorAll('input[data-kind="plan"]').length,
@@ -28,7 +29,7 @@ test.describe('plano de leitura', () => {
   // Regra 1: marcar/desmarcar e liga-desliga puro, nunca move capitulos.
   test('marcar o checkbox nao move capitulos entre os dias', async ({ page }) => {
     const antes = await page.evaluate(() => {
-      const alvo = D.dates.find(d => !planChecked.has(d) && (planAssignment[d] || []).length);
+      const alvo = D.dates.find(d => d >= todayISO() && !planChecked.has(d) && (planAssignment[d] || []).length);
       return { alvo, assignment: JSON.stringify(planAssignment) };
     });
 
@@ -41,7 +42,7 @@ test.describe('plano de leitura', () => {
 
   test('o dia marcado continua marcado depois do reload', async ({ page }) => {
     const alvo = await page.evaluate(
-      () => D.dates.find(d => !planChecked.has(d) && (planAssignment[d] || []).length)
+      () => D.dates.find(d => d >= todayISO() && !planChecked.has(d) && (planAssignment[d] || []).length)
     );
 
     await page.click(`input[data-kind="plan"][data-date="${alvo}"]`);
@@ -55,7 +56,7 @@ test.describe('plano de leitura', () => {
   test('marcar aumenta o total de capitulos lidos', async ({ page }) => {
     const lidosAntes = await page.locator('#statRead').textContent();
     const alvo = await page.evaluate(
-      () => D.dates.find(d => !planChecked.has(d) && (planAssignment[d] || []).length)
+      () => D.dates.find(d => d >= todayISO() && !planChecked.has(d) && (planAssignment[d] || []).length)
     );
     const quantos = await page.evaluate(d => planAssignment[d].length, alvo);
 
@@ -77,7 +78,7 @@ test.describe('excluir e redistribuir', () => {
 
   test('nao perde capitulos, esvazia o dia e mantem a carga equilibrada', async ({ page }) => {
     const r = await page.evaluate(() => {
-      const abertos = () => D.dates.filter(d => !planChecked.has(d));
+      const abertos = () => D.dates.filter(d => d >= todayISO() && !planChecked.has(d));
       const total = () => abertos().reduce((n, d) => n + (planAssignment[d] || []).length, 0);
 
       const alvo = abertos().find(d => (planAssignment[d] || []).length > 0);
@@ -109,7 +110,7 @@ test.describe('excluir e redistribuir', () => {
 
   test('a leitura continua em ordem canonica e os pulados vem primeiro', async ({ page }) => {
     const r = await page.evaluate(() => {
-      const abertos = () => D.dates.filter(d => !planChecked.has(d));
+      const abertos = () => D.dates.filter(d => d >= todayISO() && !planChecked.has(d));
       const alvo = abertos().find(d => (planAssignment[d] || []).length > 0);
       const primeiroPulado = planAssignment[alvo][0];
 
@@ -162,17 +163,19 @@ test.describe('li ate aqui', () => {
 
   test('divide o dia pelo capitulo escolhido, sem perder nem desordenar', async ({ page }) => {
     const alvo = await page.evaluate(
-      () => D.dates.find(d => !planChecked.has(d) && (planAssignment[d] || []).length > 1)
+      () => D.dates.find(d => d >= todayISO() && !planChecked.has(d) && (planAssignment[d] || []).length > 1)
     );
     const antes = await page.evaluate(d => ({
       total: D.dates.reduce((n, x) => n + (planAssignment[x] || []).length, 0),
       doDia: planAssignment[d].length
     }), alvo);
 
+    // o botao abre um menu; "Li parte" e que abre a faixa de capitulos
     await page.locator(`.partial-btn[data-date="${alvo}"]`).click();
+    await page.locator(`.menu-item[data-date="${alvo}"][data-modo="parte"]`).click();
     // "li os 2 primeiros capitulos deste dia"
     await page.locator(`.chip[data-date="${alvo}"][data-lidos="2"]`).click();
-    await expect(page.locator('#modalTitle')).toHaveText('Li ate aqui');
+    await expect(page.locator('#modalTitle')).toHaveText('Li parte');
     await page.click('#modalConfirm');
     await expect(page.locator('#modalOverlay')).toBeHidden();
 
@@ -198,9 +201,9 @@ test.describe('li ate aqui', () => {
     expect(antes.doDia).toBeGreaterThan(2);
   });
 
-  test('nao oferece "Li parte" num dia ja concluido', async ({ page }) => {
+  test('nao oferece ajuste num dia ja concluido', async ({ page }) => {
     const alvo = await page.evaluate(
-      () => D.dates.find(d => !planChecked.has(d) && (planAssignment[d] || []).length > 1)
+      () => D.dates.find(d => d >= todayISO() && !planChecked.has(d) && (planAssignment[d] || []).length > 1)
     );
     await expect(page.locator(`.partial-btn[data-date="${alvo}"]`)).toBeVisible();
     await page.click(`input[data-kind="plan"][data-date="${alvo}"]`);
@@ -235,6 +238,7 @@ test.describe('dias sem capitulos', () => {
   });
 
   test('a nota continua aparecendo num dia passado esvaziado', async ({ page }) => {
+    await expandirPassados(page);
     const temNota = await page.evaluate(() => {
       const hoje = todayISO();
       const passado = D.dates.find(d => d < hoje);

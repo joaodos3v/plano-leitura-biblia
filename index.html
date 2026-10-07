@@ -55,6 +55,29 @@
   .chip-wrap { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
   .chip { font-size: 0.68rem; padding: 2px 6px; border-radius: 5px; background: var(--accent-light); color: var(--accent); }
   .chip.read { background: var(--done); color: #fff; text-decoration: line-through; opacity: 0.8; }
+  /* A barra fica colada no topo ao rolar: o botao "Hoje" precisa estar sempre
+     ao alcance, que e justamente o problema de ter 114 dias na mesma lista. */
+  .plan-bar { position: sticky; top: 0; z-index: 20; display: flex; gap: 8px;
+              background: var(--bg); padding: 8px 0 10px; margin-bottom: 4px; }
+  .plan-bar input { flex: 1; }
+  .today-btn { flex-shrink: 0; padding: 9px 14px; border-radius: 8px; border: 1px solid var(--accent);
+               background: var(--accent); color: #fff; font-family: inherit; font-size: 0.85rem; cursor: pointer; }
+  .today-btn:disabled { opacity: 0.45; cursor: default; }
+
+  .past-toggle { width: 100%; text-align: left; padding: 10px 14px; margin-bottom: 8px;
+                 border-radius: 10px; border: 1px dashed var(--border); background: none;
+                 color: var(--muted); font-family: inherit; font-size: 0.82rem; cursor: pointer; }
+  .past-toggle:hover { border-color: var(--accent); color: var(--accent); }
+
+  .menu-wrap { position: relative; }
+  .menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 30; min-width: 132px;
+          background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+          box-shadow: 0 6px 20px rgba(43,38,32,0.16); overflow: hidden; }
+  .menu-item { display: block; width: 100%; text-align: left; padding: 10px 12px; border: none;
+               background: none; font-family: inherit; font-size: 0.82rem; color: var(--ink); cursor: pointer; }
+  .menu-item:hover { background: var(--accent-light); color: var(--accent); }
+  .menu-item + .menu-item { border-top: 1px solid var(--border); }
+
   .search-box { margin-bottom: 12px; }
   .search-box input { width: 100%; padding: 9px 12px; border-radius: 8px; border: 1px solid var(--border); font-family: inherit; font-size: 0.9rem; background: var(--card); color: var(--ink); }
   .hidden { display: none !important; }
@@ -120,7 +143,7 @@
     <button type="button" id="logoutBtn">sair</button>
   </div>
   <div class="subtitle">09/09/2026 a 31/12/2026 &middot; devocional + plano</div>
-  <div class="note">Marcar o checkbox so atualiza o seu progresso. Se algum dia voce nao conseguir ler nada do plano, use "Excluir" naquele dia: a leitura que falta e redistribuida por igual entre os dias seguintes, em ordem.</div>
+  <div class="note">Marcar o checkbox so atualiza o seu progresso. Quando a leitura do dia nao sair como previsto, use "Li&hellip;" para dizer ate onde voce chegou (para menos ou para mais) ou "Excluir" se nao leu nada: a leitura restante e sempre redistribuida por igual entre os dias seguintes, em ordem.</div>
 
   <div class="stats">
     <div class="stat"><div class="num" id="statRemaining">-</div><div class="lbl">restantes (total)</div></div>
@@ -137,7 +160,10 @@
   </div>
 
   <div id="viewPlan">
-    <div class="search-box"><input type="text" id="searchPlan" placeholder="Buscar por data ou livro"></div>
+    <div class="plan-bar">
+      <input type="text" id="searchPlan" placeholder="Buscar por data ou livro">
+      <button type="button" class="today-btn" id="goToday">Hoje</button>
+    </div>
     <div id="planList"></div>
   </div>
 
@@ -377,19 +403,20 @@ function spreadEvenly(items, days) {
 // que sobram. Assim a leitura nunca sai de ordem e o atraso vira um capitulo
 // a mais espalhado por muitos dias, em vez de um dia sobrecarregado.
 function replanejar(dt, lidos) {
-  const chapters = planAssignment[dt] || [];
-  if (chapters.length === 0) return;
-
   const targets = D.dates.filter(d => d > dt && !planChecked.has(d));
   if (targets.length === 0) return;  // 31/12: nao ha para onde empurrar
 
-  const pool = chapters.slice(lidos);
+  // O pool e o dia MAIS tudo o que vem depois, em ordem canonica. Por isso
+  // `lidos` pode passar do que estava previsto para o dia: ai os capitulos
+  // vem dos dias seguintes, que e exatamente o caso de "Li mais".
+  const pool = [...(planAssignment[dt] || [])];
   targets.forEach(d => pool.push(...(planAssignment[d] || [])));
+  if (pool.length === 0) return;
   pool.sort((a, b) => CANON_POS[key(a[0], a[1])] - CANON_POS[key(b[0], b[1])]);
 
-  planAssignment[dt] = chapters.slice(0, lidos);
+  planAssignment[dt] = pool.slice(0, lidos);
   targets.forEach(d => planAssignment[d] = []);
-  const spread = spreadEvenly(pool, targets);
+  const spread = spreadEvenly(pool.slice(lidos), targets);
   Object.keys(spread).forEach(d => planAssignment[d] = spread[d]);
 
   // Leu parte do dia? O dia esta concluido. Nao leu nada? Volta a ficar aberto.
@@ -411,6 +438,14 @@ function adiarDevocional(dt) {
   saveDevoSkipped();
   saveDevoChecked();
   renderAll();
+}
+
+// O que `dt` poderia absorver dos dias seguintes, em ordem. Alimenta "Li mais".
+function capitulosAdiante(dt) {
+  const adiante = [];
+  D.dates.filter(d => d > dt && !planChecked.has(d))
+         .forEach(d => adiante.push(...(planAssignment[d] || [])));
+  return adiante.sort((a, b) => CANON_POS[key(a[0], a[1])] - CANON_POS[key(b[0], b[1])]);
 }
 
 // Quantos devocionais ficariam sem dia se `dt` fosse adiado.
@@ -461,15 +496,25 @@ function openDevoModal(dt) {
   );
 }
 
-// "Li ate aqui": o dia fica com os `lidos` primeiros capitulos e o resto vai
-// para a frente, espalhado do mesmo jeito que o Excluir faz.
+// "Li ate aqui": o dia passa a ter exatamente os `lidos` primeiros capitulos
+// da fila, e todo o restante e redistribuido por igual entre os dias seguintes.
+// Serve para os dois sentidos -- ler menos que o previsto ou ler mais.
 function openPartialModal(dt, lidos) {
-  const chapters = planAssignment[dt] || [];
-  const ficam = chapters.slice(0, lidos);
-  const sobram = chapters.slice(lidos);
+  const previsto = (planAssignment[dt] || []).length;
+  const fila = [...(planAssignment[dt] || []), ...capitulosAdiante(dt)];
+  const ficam = fila.slice(0, lidos);
+  const sobram = fila.slice(lidos);
+  const leuMais = lidos > previsto;
+  const diferenca = Math.abs(lidos - previsto);
+
   openConfirm(
-    'Li ate aqui',
-    `Marcar ${fmtDate(dt)} como lido ate "${condense(ficam)}". Os ${sobram.length} capitulos restantes ("${condense(sobram)}") serao redistribuidos por igual entre os ${diasQueRecebem(dt)} dias seguintes, mantendo a ordem. Confirmar?`,
+    leuMais ? 'Li mais' : 'Li parte',
+    `Marcar ${fmtDate(dt)} como lido ate "${condense(ficam)}". ` +
+    (leuMais
+      ? `Isso adianta ${diferenca} capitulo(s) dos dias seguintes. `
+      : `Isso adia ${diferenca} capitulo(s). `) +
+    `Os ${sobram.length} capitulos restantes serao redistribuidos por igual ` +
+    `entre os ${diasQueRecebem(dt)} dias seguintes, mantendo a ordem. Confirmar?`,
     'Confirmar',
     () => replanejar(dt, lidos)
   );
@@ -496,71 +541,143 @@ function renderStats(readSet) {
   document.getElementById('dailyProgress').style.width = (doneDays/D.dates.length*100) + '%';
 }
 
-let chipsOpenFor = null;  // dia com a faixa de capitulos aberta
+// Quantos capitulos dos dias seguintes "Li mais" chega a oferecer. Sem um teto
+// a faixa viraria uma lista de centenas de botoes.
+const MAX_CHIPS_ADIANTE = 14;
+
+let chipsOpenFor = null;   // {date, modo} com a faixa de capitulos aberta
+let menuOpenFor = null;    // dia com o menu "Li..." aberto
+let pastExpanded = false;  // secao dos dias que ja passaram
+
+function chipHTML(dt, c, lidos, titulo) {
+  return `<button class="chip" data-date="${dt}" data-lidos="${lidos}" title="${titulo}">
+            <span class="chip-book">${c[0]}</span>${c[1]}
+          </button>`;
+}
+
+function buildCard(dt, today) {
+  const devo = devoByDate[dt];
+  const chapters = planAssignment[dt] || [];
+  const card = document.createElement('div');
+  card.className = 'day-card' + (dt === today ? ' today' : '');
+  card.dataset.date = dt;
+
+  let rows = '';
+  if (devo) {
+    const checked = devoChecked.has(dt);
+    rows += `<div class="row ${checked?'done':''}">
+      <input type="checkbox" data-kind="devo" data-date="${dt}" ${checked?'checked':''}>
+      <div class="row-label"><span class="tag">Devocional</span>${devo.label}</div>
+      <div class="row-actions"><button class="devo-exclude-btn" data-date="${dt}">Excluir</button></div>
+    </div>`;
+  }
+
+  if (chapters.length > 0) {
+    const checked = planChecked.has(dt);
+    const adiante = checked ? [] : capitulosAdiante(dt);
+    // Ler menos exige mais de um capitulo no dia; ler mais exige capitulo
+    // sobrando adiante. Qualquer um dos dois precisa de dia seguinte livre.
+    const podeMenos = !checked && chapters.length > 1 && diasQueRecebem(dt) > 0;
+    const podeMais  = !checked && adiante.length > 0 && diasQueRecebem(dt) > 0;
+    const menuAberto = menuOpenFor === dt;
+    const faixa = chipsOpenFor && chipsOpenFor.date === dt ? chipsOpenFor.modo : null;
+
+    rows += `<div class="row ${checked?'done':''}">
+      <input type="checkbox" data-kind="plan" data-date="${dt}" ${checked?'checked':''}>
+      <div class="row-label"><span class="tag">Plano</span>${condense(chapters)}</div>
+      <div class="row-actions">
+        ${(podeMenos || podeMais) ? `<div class="menu-wrap">
+          <button class="partial-btn ${menuAberto||faixa?'open':''}" data-date="${dt}">Li…</button>
+          ${menuAberto ? `<div class="menu">
+            ${podeMenos ? `<button class="menu-item" data-date="${dt}" data-modo="parte">Li parte</button>` : ''}
+            ${podeMais  ? `<button class="menu-item" data-date="${dt}" data-modo="mais">Li mais</button>` : ''}
+          </div>` : ''}
+        </div>` : ''}
+        <button class="exclude-btn" data-date="${dt}">Excluir</button>
+      </div>
+    </div>`;
+
+    if (faixa === 'parte') {
+      // O ultimo capitulo nao aparece: "li tudo" e o proprio checkbox.
+      const chips = chapters.slice(0, -1)
+        .map((c, i) => chipHTML(dt, c, i + 1, `Li ate ${c[0]} ${c[1]}`)).join('');
+      rows += `<div class="chips"><div class="chips-hint">Ate qual capitulo voce leu?</div>${chips}</div>`;
+    } else if (faixa === 'mais') {
+      const chips = adiante.slice(0, MAX_CHIPS_ADIANTE)
+        .map((c, i) => chipHTML(dt, c, chapters.length + i + 1, `Li ate ${c[0]} ${c[1]}`)).join('');
+      rows += `<div class="chips">
+        <div class="chips-hint">Voce leu alem de ${condense(chapters)}. Ate onde chegou?</div>${chips}
+      </div>`;
+    }
+  } else if (dt <= today) {
+    // Dia passado ou hoje sem capitulos: voce excluiu ou ja redistribuiu.
+    // Num dia futuro isso seria inconsistencia, entao ali nao anunciamos nada.
+    rows += `<div class="empty-note">Sem capitulos do plano neste dia.</div>`;
+  }
+
+  card.innerHTML = `<div class="day-date">${fmtDate(dt)}</div>${rows}`;
+  return card;
+}
+
 function renderPlan(filter) {
   const list = document.getElementById('planList');
   list.innerHTML = '';
   const f = (filter||'').toLowerCase().trim();
   const today = todayISO();
-  let any = false;
-  D.dates.forEach(dt => {
+
+  const visiveis = D.dates.filter(dt => {
+    if (!f) return true;
     const devo = devoByDate[dt];
-    const chapters = planAssignment[dt] || [];
-    const planText = condense(chapters);
-    const dateLabel = fmtDate(dt);
-    const hay = (dateLabel+' '+(planText||'')+' '+(devo?devo.label:'')).toLowerCase();
-    if (f && !hay.includes(f)) return;
-    any = true;
-    const isToday = dt === today;
-    const card = document.createElement('div');
-    card.className = 'day-card' + (isToday ? ' today' : '');
-    let rows = '';
-    if (devo) {
-      const checked = devoChecked.has(dt);
-      rows += `<div class="row ${checked?'done':''}">
-        <input type="checkbox" data-kind="devo" data-date="${dt}" ${checked?'checked':''}>
-        <div class="row-label"><span class="tag">Devocional</span>${devo.label}</div>
-        <div class="row-actions"><button class="devo-exclude-btn" data-date="${dt}">Excluir</button></div>
-      </div>`;
-    }
-    if (chapters.length > 0) {
-      const checked = planChecked.has(dt);
-      // "Li parte" so faz sentido num dia ainda aberto, com mais de um capitulo
-      // e que tenha para onde empurrar o restante.
-      const podeDividir = !checked && chapters.length > 1 && diasQueRecebem(dt) > 0;
-      const aberto = chipsOpenFor === dt;
-      rows += `<div class="row ${checked?'done':''}">
-        <input type="checkbox" data-kind="plan" data-date="${dt}" ${checked?'checked':''}>
-        <div class="row-label"><span class="tag">Plano</span>${planText}</div>
-        <div class="row-actions">
-          ${podeDividir ? `<button class="partial-btn ${aberto?'open':''}" data-date="${dt}">Li parte</button>` : ''}
-          <button class="exclude-btn" data-date="${dt}">Excluir</button>
-        </div>
-      </div>`;
-      if (podeDividir && aberto) {
-        // O ultimo capitulo nao aparece: "li tudo" e o proprio checkbox.
-        const chips = chapters.slice(0, -1).map((c, i) =>
-          `<button class="chip" data-date="${dt}" data-lidos="${i+1}" title="Li ${c[0]} ${c[1]} e paro aqui">
-             <span class="chip-book">${c[0]}</span>${c[1]}
-           </button>`).join('');
-        rows += `<div class="chips"><div class="chips-hint">Ate qual capitulo voce leu?</div>${chips}</div>`;
-      }
-    } else if (dt <= today) {
-      // Dia passado ou hoje sem capitulos: voce excluiu ou ja redistribuiu.
-      // Num dia futuro isso seria inconsistencia, entao ali nao anunciamos nada.
-      rows += `<div class="empty-note">Sem capitulos do plano neste dia.</div>`;
-    }
-    card.innerHTML = `<div class="day-date">${dateLabel}</div>${rows}`;
-    list.appendChild(card);
+    const hay = (fmtDate(dt) + ' ' + (condense(planAssignment[dt] || []) || '') +
+                 ' ' + (devo ? devo.label : '')).toLowerCase();
+    return hay.includes(f);
   });
-  if (!any) list.innerHTML = '<div class="empty-msg">Nenhum dia encontrado.</div>';
+
+  if (visiveis.length === 0) {
+    list.innerHTML = '<div class="empty-msg">Nenhum dia encontrado.</div>';
+    return;
+  }
+
+  // Durante uma busca nada fica recolhido: um resultado escondido dentro da
+  // secao dos dias anteriores pareceria que a busca nao achou nada.
+  const passados = f ? [] : visiveis.filter(dt => dt < today);
+  const resto = f ? visiveis : visiveis.filter(dt => dt >= today);
+
+  if (passados.length > 0) {
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'past-toggle';
+    toggle.id = 'pastToggle';
+    toggle.textContent = `${pastExpanded ? '▾' : '▸'} ${passados.length} dias anteriores`;
+    toggle.addEventListener('click', () => {
+      pastExpanded = !pastExpanded;
+      renderPlan(document.getElementById('searchPlan').value);
+    });
+    list.appendChild(toggle);
+
+    if (pastExpanded) {
+      passados.forEach(dt => list.appendChild(buildCard(dt, today)));
+    }
+  }
+
+  resto.forEach(dt => list.appendChild(buildCard(dt, today)));
 
   list.querySelectorAll('input[data-kind="devo"]').forEach(cb => cb.addEventListener('change', () => toggleDevoChecked(cb.dataset.date)));
   list.querySelectorAll('input[data-kind="plan"]').forEach(cb => cb.addEventListener('change', () => togglePlanChecked(cb.dataset.date)));
   list.querySelectorAll('.exclude-btn').forEach(btn => btn.addEventListener('click', () => openExcludeModal(btn.dataset.date)));
   list.querySelectorAll('.devo-exclude-btn').forEach(btn => btn.addEventListener('click', () => openDevoModal(btn.dataset.date)));
-  list.querySelectorAll('.partial-btn').forEach(btn => btn.addEventListener('click', () => {
-    chipsOpenFor = chipsOpenFor === btn.dataset.date ? null : btn.dataset.date;
+  list.querySelectorAll('.partial-btn').forEach(btn => btn.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    const dt = btn.dataset.date;
+    const jaAberto = menuOpenFor === dt || (chipsOpenFor && chipsOpenFor.date === dt);
+    menuOpenFor = jaAberto ? null : dt;
+    chipsOpenFor = null;
+    renderPlan(document.getElementById('searchPlan').value);
+  }));
+  list.querySelectorAll('.menu-item').forEach(btn => btn.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    menuOpenFor = null;
+    chipsOpenFor = { date: btn.dataset.date, modo: btn.dataset.modo };
     renderPlan(document.getElementById('searchPlan').value);
   }));
   list.querySelectorAll('.chip').forEach(btn => btn.addEventListener('click', () => {
@@ -568,6 +685,28 @@ function renderPlan(filter) {
     openPartialModal(btn.dataset.date, Number(btn.dataset.lidos));
   }));
 }
+
+// Clicar fora fecha o menu suspenso.
+document.addEventListener('click', () => {
+  if (menuOpenFor === null) return;
+  menuOpenFor = null;
+  renderPlan(document.getElementById('searchPlan').value);
+});
+
+// Leva ate o dia de hoje. Se uma busca estiver escondendo o dia, limpa a busca
+// antes, senao o botao nao faria nada e pareceria quebrado.
+function irParaHoje() {
+  const hoje = todayISO();
+  const busca = document.getElementById('searchPlan');
+  let card = document.querySelector(`.day-card[data-date="${hoje}"]`);
+  if (!card) {
+    busca.value = '';
+    renderPlan('');
+    card = document.querySelector(`.day-card[data-date="${hoje}"]`);
+  }
+  if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+document.getElementById('goToday').addEventListener('click', irParaHoje);
 
 function renderBooks(readSet, filter) {
   const list = document.getElementById('bookList');
