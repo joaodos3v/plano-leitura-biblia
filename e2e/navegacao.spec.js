@@ -62,3 +62,73 @@ test.describe('navegacao pela lista', () => {
     await expect(page.locator(`.day-card[data-date="${hoje}"]`)).toBeVisible();
   });
 });
+
+// O visual quebrou uma vez: a barra nova do plano deixou o campo de busca sem
+// estilo nenhum, e os dias passados abertos se misturavam com os de hoje.
+test.describe('aparencia', () => {
+  test.beforeEach(async ({ page }) => {
+    await openLoggedIn(page);
+  });
+
+  test('o campo de busca do plano e igual ao da aba de livros', async ({ page }) => {
+    const estilo = (sel) => page.evaluate((s) => {
+      const cs = getComputedStyle(document.querySelector(s));
+      return ['padding', 'borderRadius', 'borderWidth', 'borderStyle', 'borderColor',
+              'fontSize', 'fontFamily', 'backgroundColor', 'color']
+        .reduce((o, k) => (o[k] = cs[k], o), {});
+    }, sel);
+
+    await page.click('#tabBooks');          // garante que a outra aba renderizou
+    await page.click('#tabPlan');
+
+    expect(await estilo('#searchPlan')).toEqual(await estilo('#searchBook'));
+  });
+
+  test('o campo de busca do plano nao fica sem estilo', async ({ page }) => {
+    const cs = await page.evaluate(() => {
+      const el = document.querySelector('#searchPlan');
+      const s = getComputedStyle(el);
+      return { borda: s.borderStyle, raio: s.borderRadius, padding: s.paddingLeft, fundo: s.backgroundColor };
+    });
+    expect(cs.borda).toBe('solid');                 // input cru nao teria borda assim
+    expect(parseFloat(cs.raio)).toBeGreaterThan(0); // cantos arredondados
+    expect(parseFloat(cs.padding)).toBeGreaterThan(8);
+    expect(cs.fundo).not.toBe('rgba(0, 0, 0, 0)');
+  });
+
+  test('os dias anteriores abertos ficam dentro de um painel', async ({ page }) => {
+    await expandirPassados(page);
+
+    const painel = page.locator('#pastPanel');
+    await expect(painel).toBeVisible();
+
+    const r = await page.evaluate(() => {
+      const p = document.querySelector('#pastPanel');
+      const cs = getComputedStyle(p);
+      const hoje = todayISO();
+      const dentro = [...p.querySelectorAll('.day-card')].map(c => c.dataset.date);
+      const fora = [...document.querySelectorAll('.day-card')]
+        .filter(c => !p.contains(c)).map(c => c.dataset.date);
+      return {
+        bordaDoPainel: cs.borderStyle,
+        fundoDoPainel: cs.backgroundColor,
+        todosDentroSaoPassados: dentro.every(d => d < hoje),
+        nenhumPassadoFora: fora.every(d => d >= hoje),
+        quantosDentro: dentro.length
+      };
+    });
+
+    expect(r.bordaDoPainel).toContain('dashed');
+    expect(r.fundoDoPainel).not.toBe('rgba(0, 0, 0, 0)');  // destaca do fundo da pagina
+    expect(r.todosDentroSaoPassados).toBe(true);
+    expect(r.nenhumPassadoFora).toBe(true);
+    expect(r.quantosDentro).toBeGreaterThan(0);
+  });
+
+  test('o painel some quando a secao e fechada', async ({ page }) => {
+    await expandirPassados(page);
+    await expect(page.locator('#pastPanel')).toBeVisible();
+    await page.locator('#pastToggle').click();
+    await expect(page.locator('#pastPanel')).toHaveCount(0);
+  });
+});

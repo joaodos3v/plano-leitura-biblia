@@ -59,7 +59,7 @@
      ao alcance, que e justamente o problema de ter 114 dias na mesma lista. */
   .plan-bar { position: sticky; top: 0; z-index: 20; display: flex; gap: 8px;
               background: var(--bg); padding: 8px 0 10px; margin-bottom: 4px; }
-  .plan-bar input { flex: 1; }
+  .plan-bar input { flex: 1; width: auto; }
   .today-btn { flex-shrink: 0; padding: 9px 14px; border-radius: 8px; border: 1px solid var(--accent);
                background: var(--accent); color: #fff; font-family: inherit; font-size: 0.85rem; cursor: pointer; }
   .today-btn:disabled { opacity: 0.45; cursor: default; }
@@ -68,6 +68,14 @@
                  border-radius: 10px; border: 1px dashed var(--border); background: none;
                  color: var(--muted); font-family: inherit; font-size: 0.82rem; cursor: pointer; }
   .past-toggle:hover { border-color: var(--accent); color: var(--accent); }
+  /* Aberto, o botao vira a tampa do painel e se funde com ele. */
+  .past-toggle.open { margin-bottom: 0; border-radius: 10px 10px 0 0; border-bottom-color: transparent;
+                      background: var(--accent-light); color: var(--accent); }
+
+  .past-panel { border: 1px dashed var(--border); border-top: none; border-radius: 0 0 10px 10px;
+                padding: 10px 10px 2px; margin-bottom: 14px; background: var(--accent-light); }
+  .past-panel .day-card { margin-bottom: 8px; }
+  .past-panel .day-card:last-child { margin-bottom: 8px; }
 
   .menu-wrap { position: relative; }
   .menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 30; min-width: 132px;
@@ -79,7 +87,8 @@
   .menu-item + .menu-item { border-top: 1px solid var(--border); }
 
   .search-box { margin-bottom: 12px; }
-  .search-box input { width: 100%; padding: 9px 12px; border-radius: 8px; border: 1px solid var(--border); font-family: inherit; font-size: 0.9rem; background: var(--card); color: var(--ink); }
+  .search-box input, .plan-bar input { width: 100%; padding: 9px 12px; border-radius: 8px; border: 1px solid var(--border); font-family: inherit; font-size: 0.9rem; background: var(--card); color: var(--ink); }
+  .search-box input:focus, .plan-bar input:focus { outline: 2px solid var(--accent-light); border-color: var(--accent); }
   .hidden { display: none !important; }
   .empty-msg { text-align:center; color: var(--muted); padding: 30px 0; font-size: 0.9rem; }
   .note { font-size: 0.78rem; color: var(--muted); margin: -8px 0 16px; line-height: 1.4; }
@@ -648,6 +657,7 @@ function renderPlan(filter) {
     toggle.type = 'button';
     toggle.className = 'past-toggle';
     toggle.id = 'pastToggle';
+    toggle.classList.toggle('open', pastExpanded);
     toggle.textContent = `${pastExpanded ? '▾' : '▸'} ${passados.length} dias anteriores`;
     toggle.addEventListener('click', () => {
       pastExpanded = !pastExpanded;
@@ -656,7 +666,12 @@ function renderPlan(filter) {
     list.appendChild(toggle);
 
     if (pastExpanded) {
-      passados.forEach(dt => list.appendChild(buildCard(dt, today)));
+      // Painel proprio: sem ele os dias antigos se misturam com os de hoje.
+      const painel = document.createElement('div');
+      painel.className = 'past-panel';
+      painel.id = 'pastPanel';
+      passados.forEach(dt => painel.appendChild(buildCard(dt, today)));
+      list.appendChild(painel);
     }
   }
 
