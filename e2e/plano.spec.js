@@ -13,6 +13,7 @@ test.describe('plano de leitura', () => {
 
   test('renderiza os dias do plano e o devocional', async ({ page }) => {
     await expandirPassados(page);   // a contagem e do calendario inteiro
+    const D_devoLen = await page.evaluate(() => D.devo_schedule.length);
     const contagem = await page.evaluate(() => ({
       dias: D.dates.length,
       linhasDePlano: document.querySelectorAll('input[data-kind="plan"]').length,
@@ -20,7 +21,7 @@ test.describe('plano de leitura', () => {
       capitulosCanonicos: D.all_chapters.length
     }));
     expect(contagem.capitulosCanonicos).toBe(1189);
-    expect(contagem.linhasDeDevocional).toBe(67);
+    expect(contagem.linhasDeDevocional).toBe(D_devoLen);
     // um dia sem capitulos de plano nao renderiza checkbox de plano
     expect(contagem.linhasDePlano).toBeGreaterThan(0);
     expect(contagem.linhasDePlano).toBeLessThanOrEqual(contagem.dias);

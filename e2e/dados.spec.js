@@ -56,15 +56,43 @@ test.describe('integridade do plano', () => {
     expect(invalidos).toEqual([]);
   });
 
-  test('o devocional tem 67 dias e o rotulo bate com o capitulo', async ({ page }) => {
+  test('o devocional tem 78 dias e o rotulo bate com o capitulo', async ({ page }) => {
     const r = await page.evaluate(() => ({
       dias: D.devo_schedule.length,
       rotulosErrados: D.devo_schedule
         .filter(d => d.label !== `${d.book} ${d.ch}`)
         .map(d => `${d.date}: label ${d.label} != ${d.book} ${d.ch}`)
     }));
-    expect(r.dias).toBe(67);
+    expect(r.dias).toBe(78);
     expect(r.rotulosErrados).toEqual([]);
+  });
+
+  // Trecho corrigido a mao a partir do devocional impresso: Lucas 2 de #340 a
+  // #347, Mateus 2 de #348 a #352, Lucas 2 em #353 e Joao 3 em #354.
+  // A numeracao do devocional e o indice + 288, e a lista termina no #365.
+  test('a sequencia de Lucas 2 e Mateus 2 do fim de novembro esta correta', async ({ page }) => {
+    const r = await page.evaluate(() => {
+      const o = D.devo_schedule;
+      const trecho = (ini, fim) => o.slice(ini, fim + 1).map(d => d.label);
+      return {
+        lucas: trecho(52, 59),
+        mateus: trecho(60, 64),
+        lucasDepois: o[65].label,
+        joao: o[66].label,
+        ultimoNumero: o.length - 1 + 288,
+        cauda: trecho(66, o.length - 1)
+      };
+    });
+
+    expect(r.lucas).toEqual(Array(8).fill('Lucas 2'));    // #340-347
+    expect(r.mateus).toEqual(Array(5).fill('Mateus 2'));  // #348-352
+    expect(r.lucasDepois).toBe('Lucas 2');                // #353
+    expect(r.joao).toBe('João 3');                        // #354
+    expect(r.ultimoNumero).toBe(365);                     // a lista fecha o ano
+    // de Joao 3 em diante a ordem original foi preservada
+    expect(r.cauda).toEqual(['João 3', 'Isaías 9', 'João 8', 'Filipenses 4',
+      'Filipenses 2', '1 João 4', 'Efésios 2', 'Efésios 1', 'Hebreus 9',
+      'Apocalipse 21', 'João 15', 'Mateus 5']);
   });
 
   test('23 de setembro e Mateus 6', async ({ page }) => {

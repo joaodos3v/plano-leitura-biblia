@@ -1,5 +1,5 @@
 // Adiar o devocional: o dia escolhido fica sem devocional e toda a fila anda
-// um dia. A ORDEM dos 67 devocionais nunca muda -- so em que dia cada um cai.
+// um dia. A ORDEM dos devocionais nunca muda -- so em que dia cada um cai.
 
 const { test, expect } = require('./fixtures');
 const { openLoggedIn } = require('./helpers');
@@ -44,7 +44,7 @@ test.describe('adiar devocional', () => {
     }
   });
 
-  test('a ordem dos 67 devocionais e preservada', async ({ page }) => {
+  test('a ordem dos devocionais e preservada', async ({ page }) => {
     const ordemOriginal = await page.evaluate(() => D.devo_schedule.map(d => d.label));
 
     const alvo = await page.evaluate(() => Object.keys(devoByDate).sort().find(d => d >= todayISO()));
