@@ -77,6 +77,21 @@
   .past-panel .day-card { margin-bottom: 8px; }
   .past-panel .day-card:last-child { margin-bottom: 8px; }
 
+  .mode-box { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+              background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+              padding: 10px 12px; margin-bottom: 14px; }
+  .mode-seg { display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .mode-seg button { padding: 7px 12px; border: none; background: var(--bg); font-family: inherit;
+                     font-size: 0.8rem; color: var(--muted); cursor: pointer; }
+  .mode-seg button.active { background: var(--accent); color: #fff; }
+  .mode-rate { display: flex; align-items: center; gap: 6px; font-size: 0.8rem; color: var(--muted); }
+  .mode-rate input { width: 58px; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border);
+                     font-family: inherit; font-size: 0.85rem; background: var(--bg); color: var(--ink); }
+  .mode-info { font-size: 0.78rem; color: var(--accent); margin-left: auto; text-align: right; }
+
+  .row.doing { background: var(--accent-light); border-radius: 6px; }
+  .partial-note { font-size: 0.75rem; color: var(--accent); padding: 2px 0 0 27px; }
+
   .menu-wrap { position: relative; }
   .menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 30; min-width: 132px;
           background: var(--card); border: 1px solid var(--border); border-radius: 8px;
@@ -129,6 +144,9 @@
       min-height: 40px; padding: 8px 12px; font-size: 0.78rem;
     }
     .row-actions { display: flex; gap: 6px; align-items: flex-start; }
+    .mode-seg button { min-height: 40px; padding: 8px 14px; }
+    .mode-rate input { min-height: 40px; }
+    .mode-info { margin-left: 0; width: 100%; text-align: left; }
   }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -152,7 +170,7 @@
     <button type="button" id="logoutBtn">sair</button>
   </div>
   <div class="subtitle">09/09/2026 a 31/12/2026 &middot; devocional + plano</div>
-  <div class="note">Marcar o checkbox so atualiza o seu progresso. Quando a leitura do dia nao sair como previsto, use "Li&hellip;" para dizer ate onde voce chegou (para menos ou para mais) ou "Excluir" se nao leu nada: a leitura restante e sempre redistribuida por igual entre os dias seguintes, em ordem.</div>
+  <div class="note">Marcar o checkbox so atualiza o seu progresso. Quando a leitura do dia nao sair como previsto, use "Li&hellip;" para dizer ate onde voce chegou: "Estou lendo" registra o progresso sem fechar o dia, "Li parte" e "Li mais" fecham o dia e redistribuem o restante, e "Excluir" e para quando nao leu nada. Em "Por ritmo" voce fixa quantos capitulos le por dia e o plano se estende pelo tempo que precisar.</div>
 
   <div class="stats">
     <div class="stat"><div class="num" id="statRemaining">-</div><div class="lbl">restantes (total)</div></div>
@@ -162,6 +180,17 @@
   </div>
 
   <div class="progress-bar-outer"><div class="progress-bar-inner" id="dailyProgress"></div></div>
+
+  <div class="mode-box">
+    <div class="mode-seg">
+      <button type="button" id="modePrazo">Por prazo</button>
+      <button type="button" id="modeRitmo">Por ritmo</button>
+    </div>
+    <label class="mode-rate hidden" id="rateBox">
+      <input type="number" id="rateInput" min="1" max="50" step="1"> capitulos por dia
+    </label>
+    <div class="mode-info" id="modeInfo"></div>
+  </div>
 
   <div class="tabs">
     <div class="tab active" id="tabPlan">Plano diario</div>
@@ -209,6 +238,21 @@ function fmtDate(iso) {
 }
 function key(book,ch){ return book+'|'+ch; }
 
+function addDays(iso, n) {
+  const d = new Date(iso + 'T12:00:00');
+  d.setDate(d.getDate() + n);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+
+// O calendario original termina em 31/12. No modo "ritmo" a leitura pode passar
+// disso, entao a lista de dias deixa de ser fixa: e a uniao dos dias originais
+// com qualquer dia que tenha ganhado capitulos depois do fim do calendario.
+function diasDoPlano() {
+  const extras = Object.keys(planAssignment).filter(d => d > D.dates[D.dates.length-1]);
+  if (extras.length === 0) return D.dates;
+  return [...D.dates, ...extras.sort()];
+}
+
 // Preencher com os valores do projeto Supabase (ver SETUP_SUPABASE.md).
 // Enquanto estiverem com os placeholders, o app roda so com localStorage,
 // sem tela de login.
@@ -221,6 +265,9 @@ let userId = null;
 
 let planAssignment = {};  // date -> [[book,ch],...] mutable ONLY via exclude
 let planChecked = new Set();
+let partialRead = {};        // date -> quantos capitulos daquele dia ja foram lidos
+let viewMode = 'prazo';      // 'prazo' = terminar em 31/12 | 'ritmo' = N por dia
+let chaptersPerDay = 5;
 let devoChecked = new Set();
 let devoSkipped = new Set();  // dias em que o devocional foi adiado
 let devoByDate = {};
@@ -234,7 +281,7 @@ function rebuildDevo() {
   const ordem = D.devo_schedule;
   const inicio = ordem[0].date;
   let i = 0;
-  for (const dt of D.dates) {
+  for (const dt of diasDoPlano()) {
     if (dt < inicio) continue;
     if (i >= ordem.length) break;
     if (devoSkipped.has(dt)) continue;
@@ -276,6 +323,14 @@ function loadCache() {
     const v = storageGet('bp-devo-skipped');
     devoSkipped = v ? new Set(JSON.parse(v)) : new Set();
   } catch(e) { devoSkipped = new Set(); }
+  try {
+    const v = storageGet('bp-partial-read');
+    partialRead = v ? JSON.parse(v) : {};
+  } catch(e) { partialRead = {}; }
+  try {
+    viewMode = storageGet('bp-view-mode') || 'prazo';
+    chaptersPerDay = Number(storageGet('bp-chapters-per-day')) || 5;
+  } catch(e) { viewMode = 'prazo'; chaptersPerDay = 5; }
   rebuildDevo();
 }
 
@@ -284,6 +339,9 @@ function writeCache() {
   storageSet('bp-plan-checked', JSON.stringify([...planChecked]));
   storageSet('bp-devo-checked', JSON.stringify([...devoChecked]));
   storageSet('bp-devo-skipped', JSON.stringify([...devoSkipped]));
+  storageSet('bp-partial-read', JSON.stringify(partialRead));
+  storageSet('bp-view-mode', viewMode);
+  storageSet('bp-chapters-per-day', String(chaptersPerDay));
 }
 
 async function loadState() {
@@ -300,7 +358,8 @@ async function loadState() {
     // Primeiro acesso: semeia a nuvem com o que ja existe aqui.
     const seed = { user_id: userId, plan_assignment: planAssignment,
                    plan_checked: [...planChecked], devo_checked: [...devoChecked],
-                   devo_skipped: [...devoSkipped] };
+                   devo_skipped: [...devoSkipped], partial_read: partialRead,
+                   view_mode: viewMode, chapters_per_day: chaptersPerDay };
     const { error: insErr } = await sb.from('bible_progress').insert(seed);
     if (insErr) { setSync('offline (usando este aparelho)', true); return; }
   } else {
@@ -308,6 +367,9 @@ async function loadState() {
     planChecked = new Set(data.plan_checked);
     devoChecked = new Set(data.devo_checked);
     devoSkipped = new Set(data.devo_skipped || []);
+    partialRead = data.partial_read || {};
+    viewMode = data.view_mode || 'prazo';
+    chaptersPerDay = data.chapters_per_day || 5;
     rebuildDevo();
     writeCache();
   }
@@ -345,11 +407,31 @@ async function saveDevoSkipped() {
   storageSet('bp-devo-skipped', JSON.stringify(v));
   await pushColumn('devo_skipped', v);
 }
+async function savePartialRead() {
+  storageSet('bp-partial-read', JSON.stringify(partialRead));
+  await pushColumn('partial_read', partialRead);
+}
+async function saveViewMode() {
+  storageSet('bp-view-mode', viewMode);
+  storageSet('bp-chapters-per-day', String(chaptersPerDay));
+  if (!sb || !userId) return;
+  setSync('salvando...');
+  const { error } = await sb.from('bible_progress')
+    .update({ view_mode: viewMode, chapters_per_day: chaptersPerDay,
+              updated_at: new Date().toISOString() })
+    .eq('user_id', userId);
+  setSync(error ? 'nao salvou na nuvem' : 'sincronizado', !!error);
+}
 
 function computeReadSet() {
   const s = new Set(D.initial_read.map(([b,c]) => key(b,c)));
   planChecked.forEach(dt => {
     (planAssignment[dt]||[]).forEach(([b,c]) => s.add(key(b,c)));
+  });
+  // "Estou lendo": num dia ainda aberto, os primeiros N capitulos ja contam.
+  Object.keys(partialRead).forEach(dt => {
+    if (planChecked.has(dt)) return;   // dia fechado ja contou inteiro acima
+    (planAssignment[dt]||[]).slice(0, partialRead[dt]).forEach(([b,c]) => s.add(key(b,c)));
   });
   devoChecked.forEach(dt => {
     const dd = devoByDate[dt];
@@ -405,6 +487,49 @@ function spreadEvenly(items, days) {
   return out;
 }
 
+// Capitulos que um dia ja teve como lidos via "Estou lendo". Eles ficam
+// pregados naquele dia em qualquer redistribuicao -- foram lidos, nao podem
+// virar outra coisa nem sair do lugar.
+function lidosFixados(dt) {
+  if (planChecked.has(dt)) return [];
+  const n = partialRead[dt] || 0;
+  return n > 0 ? (planAssignment[dt] || []).slice(0, n) : [];
+}
+
+// Fatia `items` entre os dias, pela regua do modo atual.
+//   prazo -> divide por igual entre os dias disponiveis (termina em 31/12)
+//   ritmo -> blocos de chaptersPerDay, criando dias novos ate a leitura acabar
+// Devolve {data: [capitulos]} e pode incluir datas que ainda nao existiam.
+function distribuir(items, dias) {
+  // No modo prazo a leitura tem de caber no calendario original: dias extras
+  // criados por uma passagem anterior pelo modo ritmo nao sao alvo.
+  if (viewMode !== 'ritmo') {
+    const ultimo = D.dates[D.dates.length - 1];
+    return spreadEvenly(items, dias.filter(d => d <= ultimo));
+  }
+
+  const out = {};
+  dias.forEach(d => out[d] = []);
+  const n = Math.max(1, chaptersPerDay);
+  let i = 0, idx = 0, ultimo = dias[dias.length - 1];
+
+  while (i < items.length) {
+    let d;
+    if (idx < dias.length) {
+      d = dias[idx];
+    } else {
+      // O calendario acabou e ainda ha leitura: segue para o dia seguinte.
+      ultimo = addDays(ultimo, 1);
+      d = ultimo;
+      out[d] = [];
+    }
+    out[d] = items.slice(i, i + n);
+    i += n;
+    idx++;
+  }
+  return out;
+}
+
 // Coracao do replanejamento. `lidos` e quantos capitulos do dia voce de fato
 // leu (0 = nao leu nada, que e o botao "Excluir"). O dia fica so com esses, e
 // TUDO o que falta dali em diante -- o resto do dia mais os dias seguintes --
@@ -412,31 +537,98 @@ function spreadEvenly(items, days) {
 // que sobram. Assim a leitura nunca sai de ordem e o atraso vira um capitulo
 // a mais espalhado por muitos dias, em vez de um dia sobrecarregado.
 function replanejar(dt, lidos) {
-  const targets = D.dates.filter(d => d > dt && !planChecked.has(d));
+  const targets = diasDoPlano().filter(d => d > dt && !planChecked.has(d));
   if (targets.length === 0) return;  // 31/12: nao ha para onde empurrar
 
   // O pool e o dia MAIS tudo o que vem depois, em ordem canonica. Por isso
   // `lidos` pode passar do que estava previsto para o dia: ai os capitulos
   // vem dos dias seguintes, que e exatamente o caso de "Li mais".
+  const fixados = {};
   const pool = [...(planAssignment[dt] || [])];
-  targets.forEach(d => pool.push(...(planAssignment[d] || [])));
+  targets.forEach(d => {
+    const lidos = lidosFixados(d);
+    if (lidos.length) fixados[d] = lidos;
+    pool.push(...(planAssignment[d] || []).slice(lidos.length));
+  });
   if (pool.length === 0) return;
   pool.sort((a, b) => CANON_POS[key(a[0], a[1])] - CANON_POS[key(b[0], b[1])]);
 
   planAssignment[dt] = pool.slice(0, lidos);
   targets.forEach(d => planAssignment[d] = []);
-  const spread = spreadEvenly(pool.slice(lidos), targets);
+  const spread = distribuir(pool.slice(lidos), targets);
   Object.keys(spread).forEach(d => planAssignment[d] = spread[d]);
+  Object.keys(fixados).forEach(d => {
+    planAssignment[d] = [...fixados[d], ...(planAssignment[d] || [])];
+  });
+  descartarDiasExtrasVazios();
 
   // Leu parte do dia? O dia esta concluido. Nao leu nada? Volta a ficar aberto.
   if (lidos > 0) planChecked.add(dt); else planChecked.delete(dt);
+  delete partialRead[dt];   // o dia foi resolvido: a marca de leitura em curso sai
 
   saveAssignment();
   savePlanChecked();
+  savePartialRead();
   renderAll();
 }
 
 function doExclude(dt) { replanejar(dt, 0); }
+
+// "Estou lendo": registra ate onde voce chegou SEM fechar o dia nem mexer na
+// distribuicao. Os capitulos ja contam como lidos e voce pode voltar depois.
+function marcarEmLeitura(dt, lidos) {
+  const total = (planAssignment[dt] || []).length;
+  if (lidos >= total) { togglePlanChecked(dt); return; }  // leu tudo = dia feito
+  if (lidos <= 0) delete partialRead[dt]; else partialRead[dt] = lidos;
+  renderAll();
+  savePartialRead();
+}
+
+// Refaz a distribuicao da leitura que ainda falta, pela regua do modo atual.
+// Dias ja concluidos nunca sao tocados: so o que esta em aberto e refatiado.
+function aplicarModo() {
+  const hoje = todayISO();
+  const abertos = diasDoPlano().filter(d => !planChecked.has(d));
+  const primeiro = abertos.find(d => d >= hoje) || abertos[0];
+  if (!primeiro) return;
+
+  // So de hoje em diante, como toda operacao do app. Dias passados em aberto
+  // guardam capitulos canonicamente anteriores; puxa-los para ca misturaria a
+  // leitura fora de ordem. Para traze-los, use "Excluir" naquele dia.
+  const alvos = abertos.filter(d => d >= primeiro);
+  const fixados = {};
+  const pool = [];
+  alvos.forEach(d => {
+    const lidos = lidosFixados(d);
+    if (lidos.length) fixados[d] = lidos;
+    pool.push(...(planAssignment[d] || []).slice(lidos.length));
+  });
+  pool.sort((a, b) => CANON_POS[key(a[0], a[1])] - CANON_POS[key(b[0], b[1])]);
+
+  alvos.forEach(d => planAssignment[d] = []);
+  const spread = distribuir(pool, alvos);
+  Object.keys(spread).forEach(d => planAssignment[d] = spread[d]);
+  // o que ja foi lido volta para a frente do seu proprio dia
+  Object.keys(fixados).forEach(d => {
+    planAssignment[d] = [...fixados[d], ...(planAssignment[d] || [])];
+  });
+  descartarDiasExtrasVazios();
+
+  saveAssignment();
+  saveViewMode();
+  renderAll();
+}
+
+// Dias alem de 31/12 so existem enquanto tem leitura. Sem isso o calendario
+// nunca encolheria ao voltar para o modo prazo.
+function descartarDiasExtrasVazios() {
+  const ultimo = D.dates[D.dates.length - 1];
+  Object.keys(planAssignment).forEach(d => {
+    if (d > ultimo && (planAssignment[d] || []).length === 0 && !planChecked.has(d)) {
+      delete planAssignment[d];
+    }
+  });
+}
 
 // Adia o devocional: o dia fica sem devocional e toda a fila anda um dia.
 function adiarDevocional(dt) {
@@ -452,7 +644,7 @@ function adiarDevocional(dt) {
 // O que `dt` poderia absorver dos dias seguintes, em ordem. Alimenta "Li mais".
 function capitulosAdiante(dt) {
   const adiante = [];
-  D.dates.filter(d => d > dt && !planChecked.has(d))
+  diasDoPlano().filter(d => d > dt && !planChecked.has(d))
          .forEach(d => adiante.push(...(planAssignment[d] || [])));
   return adiante.sort((a, b) => CANON_POS[key(a[0], a[1])] - CANON_POS[key(b[0], b[1])]);
 }
@@ -460,32 +652,42 @@ function capitulosAdiante(dt) {
 // Quantos devocionais ficariam sem dia se `dt` fosse adiado.
 function devocionaisQueNaoCabem(dt) {
   const aindaNaFila = Object.keys(devoByDate).filter(d => d >= dt).length + devoAlemDoCalendario;
-  const diasLivres = D.dates.filter(d => d > dt && !devoSkipped.has(d)).length;
+  const diasLivres = diasDoPlano().filter(d => d > dt && !devoSkipped.has(d)).length;
   return Math.max(0, aindaNaFila - diasLivres);
 }
 
 let pendingAction = null;
-function openConfirm(titulo, texto, rotuloConfirmar, acao) {
+let pendingCancel = null;
+function openConfirm(titulo, texto, rotuloConfirmar, acao, aoCancelar) {
   pendingAction = acao;
+  pendingCancel = aoCancelar || null;
   document.getElementById('modalTitle').textContent = titulo;
   document.getElementById('modalText').textContent = texto;
   document.getElementById('modalConfirm').textContent = rotuloConfirmar;
   document.getElementById('modalOverlay').classList.remove('hidden');
 }
 function closeModal() {
+  const cancelar = pendingCancel;
   pendingAction = null;
+  pendingCancel = null;
   document.getElementById('modalOverlay').classList.add('hidden');
+  if (cancelar) cancelar();
 }
 
 function diasQueRecebem(dt) {
-  return D.dates.filter(d => d > dt && !planChecked.has(d)).length;
+  return diasDoPlano().filter(d => d > dt && !planChecked.has(d)).length;
 }
 
 function openExcludeModal(dt) {
   const chapters = planAssignment[dt] || [];
+  const lendo = partialRead[dt] || 0;
   openConfirm(
     'Excluir leitura do dia',
-    `Isso vai remover "${condense(chapters)}" do dia ${fmtDate(dt)} e redistribuir a leitura que falta por igual entre os ${diasQueRecebem(dt)} dias seguintes ainda nao concluidos, mantendo a ordem dos capitulos. Confirmar?`,
+    `Isso vai remover "${condense(chapters)}" do dia ${fmtDate(dt)} e redistribuir a leitura que falta por igual entre os ${diasQueRecebem(dt)} dias seguintes ainda nao concluidos, mantendo a ordem dos capitulos.` +
+    (lendo > 0
+      ? ` Atencao: voce marcou "${condense(chapters.slice(0, lendo))}" como ja lido neste dia, e essa marca sera descartada -- use "Li parte" se quiser manter.`
+      : '') +
+    ' Confirmar?',
     'Excluir e redistribuir',
     () => doExclude(dt)
   );
@@ -532,22 +734,45 @@ function openPartialModal(dt, lidos) {
 document.getElementById('modalCancel').addEventListener('click', closeModal);
 document.getElementById('modalConfirm').addEventListener('click', () => {
   const acao = pendingAction;
+  pendingCancel = null;      // confirmou: o desfazer do cancelamento nao roda
   closeModal();
   if (acao) acao();
 });
+
+// Qual o ultimo dia com leitura marcada, ou seja, quando o plano acaba.
+function fimDoPlano() {
+  const comLeitura = diasDoPlano().filter(d => (planAssignment[d] || []).length > 0);
+  return comLeitura.length ? comLeitura[comLeitura.length - 1] : null;
+}
+
+function renderModo() {
+  document.getElementById('modePrazo').classList.toggle('active', viewMode !== 'ritmo');
+  document.getElementById('modeRitmo').classList.toggle('active', viewMode === 'ritmo');
+  document.getElementById('rateBox').classList.toggle('hidden', viewMode !== 'ritmo');
+  document.getElementById('rateInput').value = chaptersPerDay;
+
+  const fim = fimDoPlano();
+  const info = document.getElementById('modeInfo');
+  if (!fim) { info.textContent = 'Leitura concluida'; return; }
+  info.textContent = viewMode === 'ritmo'
+    ? `Termina em ${fmtDate(fim)}`
+    : `Ate ${fmtDate(fim)}`;
+}
 
 function renderStats(readSet) {
   document.getElementById('statRemaining').textContent = D.all_chapters.length - readSet.size;
   document.getElementById('statRead').textContent = readSet.size;
   const today = todayISO();
-  const futureDates = D.dates.filter(dt => dt >= today);
+  const futureDates = diasDoPlano().filter(dt => dt >= today);
   const totalFutureChapters = futureDates.reduce((sum,dt) => sum + (planAssignment[dt]||[]).length, 0);
   document.getElementById('statPerDay').textContent = futureDates.length > 0 ? (totalFutureChapters/futureDates.length).toFixed(1) : '0';
   const pendingDevo = Object.keys(devoByDate).filter(dt => !devoChecked.has(dt)).length
                     + devoAlemDoCalendario;
   document.getElementById('statDevoPending').textContent = pendingDevo;
-  const doneDays = D.dates.filter(dt => planChecked.has(dt)).length;
-  document.getElementById('dailyProgress').style.width = (doneDays/D.dates.length*100) + '%';
+  const dias = diasDoPlano();
+  const doneDays = dias.filter(dt => planChecked.has(dt)).length;
+  document.getElementById('dailyProgress').style.width = (doneDays/dias.length*100) + '%';
+  renderModo();
 }
 
 // Quantos capitulos dos dias seguintes "Li mais" chega a oferecer. Sem um teto
@@ -588,16 +813,20 @@ function buildCard(dt, today) {
     // sobrando adiante. Qualquer um dos dois precisa de dia seguinte livre.
     const podeMenos = !checked && chapters.length > 1 && diasQueRecebem(dt) > 0;
     const podeMais  = !checked && adiante.length > 0 && diasQueRecebem(dt) > 0;
+    // "Estou lendo" nao redistribui nada, entao vale ate no ultimo dia do plano.
+    const podeLendo = !checked && chapters.length > 1;
     const menuAberto = menuOpenFor === dt;
     const faixa = chipsOpenFor && chipsOpenFor.date === dt ? chipsOpenFor.modo : null;
 
-    rows += `<div class="row ${checked?'done':''}">
+    const emLeitura = !checked ? (partialRead[dt] || 0) : 0;
+    rows += `<div class="row ${checked?'done':''} ${emLeitura?'doing':''}">
       <input type="checkbox" data-kind="plan" data-date="${dt}" ${checked?'checked':''}>
       <div class="row-label"><span class="tag">Plano</span>${condense(chapters)}</div>
       <div class="row-actions">
-        ${(podeMenos || podeMais) ? `<div class="menu-wrap">
+        ${(podeMenos || podeMais || podeLendo) ? `<div class="menu-wrap">
           <button class="partial-btn ${menuAberto||faixa?'open':''}" data-date="${dt}">Li…</button>
           ${menuAberto ? `<div class="menu">
+            ${podeLendo ? `<button class="menu-item" data-date="${dt}" data-modo="lendo">Estou lendo</button>` : ''}
             ${podeMenos ? `<button class="menu-item" data-date="${dt}" data-modo="parte">Li parte</button>` : ''}
             ${podeMais  ? `<button class="menu-item" data-date="${dt}" data-modo="mais">Li mais</button>` : ''}
           </div>` : ''}
@@ -606,7 +835,20 @@ function buildCard(dt, today) {
       </div>
     </div>`;
 
-    if (faixa === 'parte') {
+    if (emLeitura > 0) {
+      rows += `<div class="partial-note" data-date="${dt}">` +
+              `Lendo: ${condense(chapters.slice(0, emLeitura))} ` +
+              `&middot; faltam ${condense(chapters.slice(emLeitura))}</div>`;
+    }
+
+    if (faixa === 'lendo') {
+      // Mesma faixa do "Li parte", mas sem fechar o dia.
+      const chips = chapters.slice(0, -1)
+        .map((c, i) => chipHTML(dt, c, i + 1, `Li ate ${c[0]} ${c[1]}`)).join('');
+      rows += `<div class="chips">
+        <div class="chips-hint">Ate onde voce leu ate agora? O dia continua aberto.</div>${chips}
+      </div>`;
+    } else if (faixa === 'parte') {
       // O ultimo capitulo nao aparece: "li tudo" e o proprio checkbox.
       const chips = chapters.slice(0, -1)
         .map((c, i) => chipHTML(dt, c, i + 1, `Li ate ${c[0]} ${c[1]}`)).join('');
@@ -634,7 +876,7 @@ function renderPlan(filter) {
   const f = (filter||'').toLowerCase().trim();
   const today = todayISO();
 
-  const visiveis = D.dates.filter(dt => {
+  const visiveis = diasDoPlano().filter(dt => {
     if (!f) return true;
     const devo = devoByDate[dt];
     const hay = (fmtDate(dt) + ' ' + (condense(planAssignment[dt] || []) || '') +
@@ -696,8 +938,12 @@ function renderPlan(filter) {
     renderPlan(document.getElementById('searchPlan').value);
   }));
   list.querySelectorAll('.chip').forEach(btn => btn.addEventListener('click', () => {
+    const modo = chipsOpenFor && chipsOpenFor.modo;
     chipsOpenFor = null;
-    openPartialModal(btn.dataset.date, Number(btn.dataset.lidos));
+    const dt = btn.dataset.date, lidos = Number(btn.dataset.lidos);
+    // "Estou lendo" nao redistribui nada, entao nao precisa de confirmacao.
+    if (modo === 'lendo') marcarEmLeitura(dt, lidos);
+    else openPartialModal(dt, lidos);
   }));
 }
 
@@ -722,6 +968,33 @@ function irParaHoje() {
   if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 document.getElementById('goToday').addEventListener('click', irParaHoje);
+
+function trocarModo(modo) {
+  if (viewMode === modo) return;
+  const antes = viewMode;
+  viewMode = modo;
+  const fimAtual = fimDoPlano();
+  openConfirm(
+    modo === 'ritmo' ? 'Ler por ritmo' : 'Ler por prazo',
+    modo === 'ritmo'
+      ? `A leitura que falta sera refeita em blocos de ${chaptersPerDay} capitulos por dia, ` +
+        `estendendo o calendario quantos dias forem precisos. Os dias ja concluidos nao mudam. Confirmar?`
+      : `A leitura que falta sera redistribuida por igual ate ${fmtDate(D.dates[D.dates.length-1])}. ` +
+        `Os dias ja concluidos nao mudam. Confirmar?`,
+    'Confirmar',
+    () => aplicarModo(),
+    () => { viewMode = antes; renderAll(); }   // cancelou: volta como estava
+  );
+}
+
+document.getElementById('modePrazo').addEventListener('click', () => trocarModo('prazo'));
+document.getElementById('modeRitmo').addEventListener('click', () => trocarModo('ritmo'));
+document.getElementById('rateInput').addEventListener('change', (ev) => {
+  const n = Math.max(1, Math.min(50, Number(ev.target.value) || 5));
+  chaptersPerDay = n;
+  ev.target.value = n;
+  if (viewMode === 'ritmo') aplicarModo(); else saveViewMode();
+});
 
 function renderBooks(readSet, filter) {
   const list = document.getElementById('bookList');

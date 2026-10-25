@@ -76,8 +76,9 @@ async function instalarFakeSupabase(page) {
           ? route.fulfill(json({ code: 'PGRST116', message: 'no rows' }, 406))
           : route.fulfill(json([]));
       }
-      if (metodo === 'POST') {          // insert do primeiro acesso
-        store.linha = { ...req.postDataJSON() };
+      if (metodo === 'POST') {          // insert do primeiro acesso, com os defaults do banco
+        store.linha = { view_mode: 'prazo', chapters_per_day: 5, partial_read: {},
+                        ...req.postDataJSON() };
         return route.fulfill({ status: 201, body: '' });
       }
       if (metodo === 'PATCH') {         // update de uma coluna
